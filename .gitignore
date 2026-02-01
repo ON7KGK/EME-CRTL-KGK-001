@@ -44,3 +44,6 @@ Desktop.ini
 *.tmp
 *.bak
 *.old
+
+# Claude Code configuration (local only)
+.claude/

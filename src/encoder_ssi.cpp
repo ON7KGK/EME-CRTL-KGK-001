@@ -36,6 +36,23 @@ long offsetStepsEl = 0;
 // Timing lecture encodeurs
 unsigned long lastEncoderReadTime = 0;
 
+// Variables filtrage potentiomètre (moyenne glissante)
+#if (ENCODER_AZ_TYPE == ENCODER_POT_1T) || (ENCODER_AZ_TYPE == ENCODER_POT_MT)
+    int potAdcBufferAz[POT_SAMPLES] = {0};  // Buffer circulaire ADC azimuth
+    int potBufferIndexAz = 0;                // Index buffer circulaire azimuth
+    bool potBufferFullAz = false;            // Flag buffer plein azimuth
+#endif
+
+#if (ENCODER_EL_TYPE == ENCODER_POT_1T) || (ENCODER_EL_TYPE == ENCODER_POT_MT)
+    int potAdcBufferEl[POT_SAMPLES] = {0};  // Buffer circulaire ADC élévation
+    int potBufferIndexEl = 0;                // Index buffer circulaire élévation
+    bool potBufferFullEl = false;            // Flag buffer plein élévation
+#endif
+
+// Variables tracking tours potentiomètre multi-tours
+// Note: On utilise turnsAz/turnsEl (variables globales) pour les compteurs de tours POT_MT
+// previousRawAdc est déclaré static dans updateEncoders() pour la détection wraparound
+
 // ════════════════════════════════════════════════════════════════
 // INITIALISATION
 // ════════════════════════════════════════════════════════════════
@@ -59,6 +76,17 @@ void setupEncoders() {
     #endif
 
     // ─────────────────────────────────────────────────────────────
+    // CONFIGURATION PIN POTENTIOMÈTRE (si POT 1 tour ou multi-tours)
+    // ─────────────────────────────────────────────────────────────
+    #if (ENCODER_AZ_TYPE == ENCODER_POT_1T) || (ENCODER_AZ_TYPE == ENCODER_POT_MT)
+        pinMode(POT_PIN_AZ, INPUT);
+    #endif
+
+    #if (ENCODER_EL_TYPE == ENCODER_POT_1T) || (ENCODER_EL_TYPE == ENCODER_POT_MT)
+        pinMode(POT_PIN_EL, INPUT);
+    #endif
+
+    // ─────────────────────────────────────────────────────────────
     // CHARGEMENT CALIBRATION EEPROM
     // ─────────────────────────────────────────────────────────────
     loadCalibrationFromEEPROM();
@@ -66,6 +94,35 @@ void setupEncoders() {
     // ─────────────────────────────────────────────────────────────
     // PREMIÈRE LECTURE POSITION
     // ─────────────────────────────────────────────────────────────
+
+    // Initialisation potentiomètre multi-tours AZIMUTH
+    #if (ENCODER_AZ_TYPE == ENCODER_POT_MT)
+        // Lire ADC initial et pré-remplir buffer filtrage
+        int initialAdcAz = analogRead(POT_PIN_AZ);
+
+        for (int i = 0; i < POT_SAMPLES; i++) {
+            potAdcBufferAz[i] = initialAdcAz;
+        }
+        potBufferFullAz = true;
+
+        // Note: previousRawAdcAz (static dans updateEncoders) sera initialisé
+        // automatiquement à la première lecture
+    #endif
+
+    // Initialisation potentiomètre multi-tours ÉLÉVATION
+    #if (ENCODER_EL_TYPE == ENCODER_POT_MT)
+        // Lire ADC initial et pré-remplir buffer filtrage
+        int initialAdcEl = analogRead(POT_PIN_EL);
+
+        for (int i = 0; i < POT_SAMPLES; i++) {
+            potAdcBufferEl[i] = initialAdcEl;
+        }
+        potBufferFullEl = true;
+
+        // Note: previousRawAdcEl (static dans updateEncoders) sera initialisé
+        // automatiquement à la première lecture
+    #endif
+
     delay(10);  // Stabilisation
     updateEncoders();
 
@@ -79,6 +136,10 @@ void setupEncoders() {
             Serial.println(F("SSI Absolu"));
         #elif ENCODER_AZ_TYPE == ENCODER_SSI_INC
             Serial.println(F("SSI Incrémental"));
+        #elif ENCODER_AZ_TYPE == ENCODER_POT_1T
+            Serial.println(F("Potentiomètre 1 Tour"));
+        #elif ENCODER_AZ_TYPE == ENCODER_POT_MT
+            Serial.println(F("Potentiomètre Multi-Tours"));
         #endif
 
         Serial.print(F("Type El: "));
@@ -86,6 +147,10 @@ void setupEncoders() {
             Serial.println(F("SSI Absolu"));
         #elif ENCODER_EL_TYPE == ENCODER_SSI_INC
             Serial.println(F("SSI Incrémental"));
+        #elif ENCODER_EL_TYPE == ENCODER_POT_1T
+            Serial.println(F("Potentiomètre 1 Tour"));
+        #elif ENCODER_EL_TYPE == ENCODER_POT_MT
+            Serial.println(F("Potentiomètre Multi-Tours"));
         #endif
 
         Serial.print(F("Position initiale Az: "));
@@ -136,6 +201,145 @@ void updateEncoders() {
         while (currentAz < 0) currentAz += 360.0;
         while (currentAz >= 360) currentAz -= 360.0;
 
+    #elif (ENCODER_AZ_TYPE == ENCODER_POT_1T)
+        // ─────────────────────────────────────────────────────────
+        // POTENTIOMÈTRE 1 TOUR (Filtrage moyenne glissante)
+        // ─────────────────────────────────────────────────────────
+
+        // Lecture ADC brute (0-1023)
+        int rawAdc = analogRead(POT_PIN_AZ);
+
+        // Ajout au buffer circulaire
+        potAdcBufferAz[potBufferIndexAz] = rawAdc;
+        potBufferIndexAz = (potBufferIndexAz + 1) % POT_SAMPLES;
+        if (potBufferIndexAz == 0) potBufferFullAz = true;
+
+        // Calcul moyenne glissante
+        long adcSum = 0;
+        int sampleCount = potBufferFullAz ? POT_SAMPLES : potBufferIndexAz;
+        for (int i = 0; i < sampleCount; i++) {
+            adcSum += potAdcBufferAz[i];
+        }
+        int adcValue = (int)(adcSum / sampleCount);
+
+        rawCountsAz = adcValue;  // Pour compatibilité debug
+
+        // Mapping direct: ADC 0-1023 → 0-360°
+        // Formule: degrees = (adcValue / 1024.0) * 360.0
+        currentAz = ((float)adcValue / (float)POT_ADC_RESOLUTION) * 360.0;
+
+        // Contrainte 0-360° (sécurité)
+        if (currentAz < 0.0) currentAz = 0.0;
+        if (currentAz > 360.0) currentAz = 360.0;
+
+    #elif (ENCODER_AZ_TYPE == ENCODER_POT_MT)
+        // ─────────────────────────────────────────────────────────
+        // POTENTIOMÈTRE MULTI-TOURS (Filtrage + Tracking tours)
+        // ─────────────────────────────────────────────────────────
+
+        // Lecture ADC brute (0-1023)
+        int rawAdc = analogRead(POT_PIN_AZ);
+
+        // ─────────────────────────────────────────────────────────
+        // DÉTECTION WRAPAROUND SUR ADC BRUT (AVANT FILTRAGE!)
+        // ─────────────────────────────────────────────────────────
+        // IMPORTANT: Le filtrage moyenne glissante lisse la transition 1023→0
+        // et peut empêcher la détection. On détecte donc sur ADC brut.
+        //
+        // Seuil: si ADC saute de >768 à <256 ou vice-versa
+        // (équivalent à ~270° de saut, bien au-delà du mouvement normal)
+
+        static int previousRawAdc = rawAdc;  // Valeur brute précédente (non filtrée)
+
+        int adcDelta = rawAdc - previousRawAdc;
+
+        // Passage 1023 → 0 (rotation CW)
+        if (adcDelta < -768) {  // Saut négatif brutal (ex: 1020 → 5)
+            turnsAz++;
+            EEPROM.put(EEPROM_TURNS_AZ, turnsAz);
+            #if DEBUG_SERIAL
+                Serial.print(F("✓✓✓ WRAPAROUND +1 | ADC:"));
+                Serial.print(previousRawAdc);
+                Serial.print(F("→"));
+                Serial.print(rawAdc);
+                Serial.print(F(" | turnsAz="));
+                Serial.println(turnsAz);
+            #endif
+        }
+
+        // Passage 0 → 1023 (rotation CCW)
+        if (adcDelta > 768) {  // Saut positif brutal (ex: 5 → 1020)
+            turnsAz--;
+            EEPROM.put(EEPROM_TURNS_AZ, turnsAz);
+            #if DEBUG_SERIAL
+                Serial.print(F("✓✓✓ WRAPAROUND -1 | ADC:"));
+                Serial.print(previousRawAdc);
+                Serial.print(F("→"));
+                Serial.print(rawAdc);
+                Serial.print(F(" | turnsAz="));
+                Serial.println(turnsAz);
+            #endif
+        }
+
+        previousRawAdc = rawAdc;
+
+        // ─────────────────────────────────────────────────────────
+        // FILTRAGE MOYENNE GLISSANTE (Stabilisation affichage)
+        // ─────────────────────────────────────────────────────────
+
+        // Ajout au buffer circulaire
+        potAdcBufferAz[potBufferIndexAz] = rawAdc;
+        potBufferIndexAz = (potBufferIndexAz + 1) % POT_SAMPLES;
+        if (potBufferIndexAz == 0) potBufferFullAz = true;
+
+        // Calcul moyenne glissante
+        long adcSum = 0;
+        int sampleCount = potBufferFullAz ? POT_SAMPLES : potBufferIndexAz;
+        for (int i = 0; i < sampleCount; i++) {
+            adcSum += potAdcBufferAz[i];
+        }
+        int adcValue = (int)(adcSum / sampleCount);
+
+        rawCountsAz = adcValue;  // Pour compatibilité debug
+
+        // Mapping ADC → degrés du tour courant (0-360°)
+        float potDegrees = ((float)adcValue / (float)POT_ADC_RESOLUTION) * 360.0;
+
+        // Contrainte 0-360° (sécurité)
+        if (potDegrees < 0.0) potDegrees = 0.0;
+        if (potDegrees > 360.0) potDegrees = 360.0;
+
+        // ─────────────────────────────────────────────────────────
+        // CALCUL POSITION ABSOLUE (Tours multiples + Gear Ratio)
+        // ─────────────────────────────────────────────────────────
+        // Position totale pot (degrés) = (nombre de tours × 360°) + position dans tour courant
+        // Position antenne (degrés) = position pot / GEAR_RATIO_AZ
+        //
+        // Exemple: Si GEAR_RATIO_AZ = 10.0 (10 tours pot = 1 tour antenne)
+        //   - Pot à 3600° (10 tours) → Antenne à 360° (1 tour)
+        //   - Normalisation 0-360° pour compatibilité Easycom/PstRotator
+
+        float potPositionTotal = (turnsAz * 360.0) + potDegrees;
+        currentAz = potPositionTotal / GEAR_RATIO_AZ;
+
+        // Normalisation 0-360° (requise par PstRotator)
+        while (currentAz >= 360.0) currentAz -= 360.0;
+        while (currentAz < 0.0) currentAz += 360.0;
+
+        // DEBUG TEMPORAIRE
+        #if DEBUG_SERIAL
+            Serial.print(F("POT | ADC:"));
+            Serial.print(rawAdc);
+            Serial.print(F(" filt:"));
+            Serial.print(adcValue);
+            Serial.print(F(" deg:"));
+            Serial.print(potDegrees, 1);
+            Serial.print(F(" turns:"));
+            Serial.print(turnsAz);
+            Serial.print(F(" → Az:"));
+            Serial.println(currentAz, 1);
+        #endif
+
     #endif
 
     // ═════════════════════════════════════════════════════════════
@@ -151,6 +355,138 @@ void updateEncoders() {
         // Calcul position: mapping direct 0-4095 → 0-90°
         long currentStepsEl = (long)rawCountsEl - offsetStepsEl;
         currentEl = (float)currentStepsEl * 90.0 / 4095.0;
+
+    #elif (ENCODER_EL_TYPE == ENCODER_POT_1T)
+        // ─────────────────────────────────────────────────────────
+        // POTENTIOMÈTRE 1 TOUR (Filtrage moyenne glissante)
+        // ─────────────────────────────────────────────────────────
+
+        // Lecture ADC brute (0-1023)
+        int rawAdcEl = analogRead(POT_PIN_EL);
+
+        // Ajout au buffer circulaire
+        potAdcBufferEl[potBufferIndexEl] = rawAdcEl;
+        potBufferIndexEl = (potBufferIndexEl + 1) % POT_SAMPLES;
+        if (potBufferIndexEl == 0) potBufferFullEl = true;
+
+        // Calcul moyenne glissante
+        long adcSumEl = 0;
+        int sampleCountEl = potBufferFullEl ? POT_SAMPLES : potBufferIndexEl;
+        for (int i = 0; i < sampleCountEl; i++) {
+            adcSumEl += potAdcBufferEl[i];
+        }
+        int adcValueEl = (int)(adcSumEl / sampleCountEl);
+
+        rawCountsEl = adcValueEl;  // Pour compatibilité debug
+
+        // Mapping direct: ADC 0-1023 → 0-90° (pour élévation, range typique 0-90°)
+        currentEl = ((float)adcValueEl / (float)POT_ADC_RESOLUTION) * 90.0;
+
+        // Contrainte 0-90° (sécurité)
+        if (currentEl < 0.0) currentEl = 0.0;
+        if (currentEl > 90.0) currentEl = 90.0;
+
+    #elif (ENCODER_EL_TYPE == ENCODER_POT_MT)
+        // ─────────────────────────────────────────────────────────
+        // POTENTIOMÈTRE MULTI-TOURS (Filtrage + Tracking tours)
+        // ─────────────────────────────────────────────────────────
+
+        // Lecture ADC brute (0-1023)
+        int rawAdcEl = analogRead(POT_PIN_EL);
+
+        // ─────────────────────────────────────────────────────────
+        // DÉTECTION WRAPAROUND SUR ADC BRUT (AVANT FILTRAGE!)
+        // ─────────────────────────────────────────────────────────
+        static int previousRawAdcEl = rawAdcEl;  // Valeur brute précédente (non filtrée)
+
+        int adcDeltaEl = rawAdcEl - previousRawAdcEl;
+
+        // Passage 1023 → 0 (rotation CW)
+        if (adcDeltaEl < -768) {
+            turnsEl++;
+            EEPROM.put(EEPROM_TURNS_EL, turnsEl);
+            #if DEBUG_SERIAL
+                Serial.print(F("✓✓✓ EL WRAPAROUND +1 | ADC:"));
+                Serial.print(previousRawAdcEl);
+                Serial.print(F("→"));
+                Serial.print(rawAdcEl);
+                Serial.print(F(" | turnsEl="));
+                Serial.println(turnsEl);
+            #endif
+        }
+
+        // Passage 0 → 1023 (rotation CCW)
+        if (adcDeltaEl > 768) {
+            turnsEl--;
+            EEPROM.put(EEPROM_TURNS_EL, turnsEl);
+            #if DEBUG_SERIAL
+                Serial.print(F("✓✓✓ EL WRAPAROUND -1 | ADC:"));
+                Serial.print(previousRawAdcEl);
+                Serial.print(F("→"));
+                Serial.print(rawAdcEl);
+                Serial.print(F(" | turnsEl="));
+                Serial.println(turnsEl);
+            #endif
+        }
+
+        previousRawAdcEl = rawAdcEl;
+
+        // ─────────────────────────────────────────────────────────
+        // FILTRAGE MOYENNE GLISSANTE (Stabilisation affichage)
+        // ─────────────────────────────────────────────────────────
+
+        // Ajout au buffer circulaire
+        potAdcBufferEl[potBufferIndexEl] = rawAdcEl;
+        potBufferIndexEl = (potBufferIndexEl + 1) % POT_SAMPLES;
+        if (potBufferIndexEl == 0) potBufferFullEl = true;
+
+        // Calcul moyenne glissante
+        long adcSumEl = 0;
+        int sampleCountEl = potBufferFullEl ? POT_SAMPLES : potBufferIndexEl;
+        for (int i = 0; i < sampleCountEl; i++) {
+            adcSumEl += potAdcBufferEl[i];
+        }
+        int adcValueEl = (int)(adcSumEl / sampleCountEl);
+
+        rawCountsEl = adcValueEl;  // Pour compatibilité debug
+
+        // Mapping ADC → degrés du tour courant (0-360°)
+        float potDegreesEl = ((float)adcValueEl / (float)POT_ADC_RESOLUTION) * 360.0;
+
+        // Contrainte 0-360° (sécurité)
+        if (potDegreesEl < 0.0) potDegreesEl = 0.0;
+        if (potDegreesEl > 360.0) potDegreesEl = 360.0;
+
+        // ─────────────────────────────────────────────────────────
+        // CALCUL POSITION ABSOLUE (Tours multiples + Gear Ratio)
+        // ─────────────────────────────────────────────────────────
+        // Position totale pot (degrés) = (nombre de tours × 360°) + position dans tour courant
+        // Position antenne (degrés) = position pot / GEAR_RATIO_EL
+        //
+        // Exemple: Si GEAR_RATIO_EL = 4.0 (4 tours pot = 1 tour élévation 0-90°)
+        //   - Pot à 360° (1 tour) → Élévation à 90° (1/4 tour)
+        //   - Normalisation 0-90° pour compatibilité Easycom/PstRotator
+
+        float potPositionTotalEl = (turnsEl * 360.0) + potDegreesEl;
+        currentEl = potPositionTotalEl / GEAR_RATIO_EL;
+
+        // Normalisation 0-90° (typique pour élévation)
+        while (currentEl >= 90.0) currentEl -= 90.0;
+        while (currentEl < 0.0) currentEl += 90.0;
+
+        // DEBUG TEMPORAIRE
+        #if DEBUG_SERIAL
+            Serial.print(F("POT EL | ADC:"));
+            Serial.print(rawAdcEl);
+            Serial.print(F(" filt:"));
+            Serial.print(adcValueEl);
+            Serial.print(F(" deg:"));
+            Serial.print(potDegreesEl, 1);
+            Serial.print(F(" turns:"));
+            Serial.print(turnsEl);
+            Serial.print(F(" → El:"));
+            Serial.println(currentEl, 1);
+        #endif
 
     #endif
 

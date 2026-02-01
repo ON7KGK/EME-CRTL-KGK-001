@@ -21,10 +21,12 @@
 #define ENCODER_SSI_ABSOLUTE  1  // HH-12 SSI (encodeur absolu 12-bit)
 #define ENCODER_SSI_INC       2  // HH-12 INC SSI (encodeur incrémental avec tracking tours)
 #define ENCODER_HALL_SVH3     3  // Encodeur Hall intégré SVH3 (futur)
+#define ENCODER_POT_1T        4  // Potentiomètre 1 tour (0-360°, mapping simple ADC)
+#define ENCODER_POT_MT        5  // Potentiomètre multi-tours (tracking tours comme SSI_INC)
 
 // Configuration des types d'encodeurs utilisés
-#define ENCODER_AZ_TYPE  ENCODER_SSI_INC     // Azimuth: encodeur incrémental
-#define ENCODER_EL_TYPE  ENCODER_SSI_ABSOLUTE  // Élévation: encodeur absolu
+#define ENCODER_AZ_TYPE  ENCODER_POT_MT        // Azimuth: potentiomètre multi-tours
+#define ENCODER_EL_TYPE  ENCODER_POT_MT  // Élévation: encodeur absolu
 
 // ════════════════════════════════════════════════════════════════
 // DÉFINITIONS DES TYPES DE MOTEURS
@@ -51,6 +53,15 @@
 // Encodeur Élévation
 #define SSI_CS_EL     A1   // Chip Select élévation
 #define SSI_DATA_EL   A3   // Data élévation
+
+// ════════════════════════════════════════════════════════════════
+// PINS POTENTIOMÈTRE ANALOGIQUE (Simple 1 tour OU multi-tours)
+// ════════════════════════════════════════════════════════════════
+// Potentiomètre 0-360° (mapping direct ADC 0-1023 → 0-360°)
+// Compatible POT_1T (1 tour) et POT_MT (multi-tours avec tracking)
+
+#define POT_PIN_AZ    A14  // Lecture analogique azimuth (ADC 0-1023)
+#define POT_PIN_EL    A15  // Lecture analogique élévation (ADC 0-1023)
 
 // ════════════════════════════════════════════════════════════════
 // PINS MOTEURS PAS-À-PAS (TB6600 Drivers)
@@ -127,20 +138,26 @@
 // ════════════════════════════════════════════════════════════════
 
 // ─────────────────────────────────────────────────────────────────
-// RAPPORTS DE RÉDUCTION ENCODEUR
+// RAPPORTS DE RÉDUCTION CAPTEUR POSITION
 // ─────────────────────────────────────────────────────────────────
-// GEAR_RATIO = Nombre de tours ENCODEUR pour 1 tour SORTIE (antenne)
+// GEAR_RATIO = Nombre de tours CAPTEUR pour 1 tour SORTIE (antenne)
 //
-// Exemple: Si réducteur 5:1 entre moteur et sortie, et encodeur sur moteur:
-//   - Quand l'antenne fait 1 tour (360°), l'encodeur fait 5 tours
+// S'applique à TOUS les types de capteurs (SSI, POT, etc.)
+//
+// Exemple: Si réducteur 5:1 entre moteur et sortie, et capteur sur moteur:
+//   - Quand l'antenne fait 1 tour (360°), le capteur fait 5 tours
 //   - GEAR_RATIO = 5.0
-//   - angle_sortie = angle_encodeur / GEAR_RATIO
+//   - angle_sortie = angle_capteur / GEAR_RATIO
 //
-// Si encodeur directement sur la sortie (sans réduction):
+// Si capteur directement sur la sortie (sans réduction):
 //   - GEAR_RATIO = 1.0
 //
-#define GEAR_RATIO_AZ        10.0   // Tours encodeur pour 1 tour antenne Az
-#define GEAR_RATIO_EL        1.0   // Tours encodeur pour 1 tour antenne El
+// Potentiomètre multi-tours (ENCODER_POT_MT):
+//   - Exemple: 10 tours pot = 1 tour antenne → GEAR_RATIO_AZ = 10.0
+//   - Résolution finale = 0.35°/count × 10 = 0.035°/count
+//
+#define GEAR_RATIO_AZ        10.0   // Tours capteur pour 1 tour antenne Az
+#define GEAR_RATIO_EL        10.0    // Tours capteur pour 1 tour antenne El
 
 // ─────────────────────────────────────────────────────────────────
 // CARACTÉRISTIQUES MOTEURS PAS-À-PAS
@@ -152,6 +169,20 @@
 // RÉSOLUTION ENCODEURS SSI
 // ─────────────────────────────────────────────────────────────────
 #define SSI_COUNTS_PER_REV   4096  // 12-bit encodeur = 4096 counts par tour
+
+// ─────────────────────────────────────────────────────────────────
+// CONFIGURATION POTENTIOMÈTRE 1 TOUR (Simple)
+// ─────────────────────────────────────────────────────────────────
+// Mapping direct ADC → degrés (pas de multi-tours, pas de tracking)
+// Résolution ADC 10-bit: 0-1023 counts → 0-360°
+// Résolution angulaire: 360° / 1024 = 0.35° par count ADC
+
+#define POT_ADC_RESOLUTION   1024  // Résolution ADC 10-bit Arduino (0-1023)
+
+// Filtrage ADC (moyenne glissante pour stabiliser affichage)
+// Plus le nombre d'échantillons est élevé, plus le filtrage est fort
+// mais plus la réponse est lente
+#define POT_SAMPLES          8     // Nombre d'échantillons pour moyenne glissante (4-16 typique)
 
 // ════════════════════════════════════════════════════════════════
 // VITESSES MOTEURS PAS-À-PAS (Délais en microsecondes)
