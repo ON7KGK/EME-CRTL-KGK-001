@@ -25,7 +25,7 @@
 #define ENCODER_POT_MT        5  // Potentiomètre multi-tours (tracking tours comme SSI_INC)
 
 // Configuration des types d'encodeurs utilisés
-#define ENCODER_AZ_TYPE  ENCODER_POT_MT        // Azimuth: potentiomètre multi-tours
+#define ENCODER_AZ_TYPE  ENCODER_SSI_ABSOLUTE        // Azimuth: potentiomètre multi-tours
 #define ENCODER_EL_TYPE  ENCODER_POT_MT  // Élévation: encodeur absolu
 
 // ════════════════════════════════════════════════════════════════
@@ -321,6 +321,10 @@
     #define DEBUG_MOTOR_CMD     1  // Affiche commandes moteur (GOTO, STOP)
     #define DEBUG_MOTOR_STEP    0  // Affiche chaque step (TRÈS verbeux)
 
+    // Nextion
+    #define DEBUG_NEXTION       0  // Affiche mise à jour Nextion (résumé)
+    #define DEBUG_NEXTION_VERBOSE 0  // Affiche chaque commande Nextion (TRÈS verbeux)
+
 #else
     // ─────────────────────────────────────────────────────────────
     // MODE SERIAL USB: Debug DÉSACTIVÉ (Serial = Easycom)
@@ -335,6 +339,8 @@
     #define DEBUG_NETWORK       0
     #define DEBUG_MOTOR_CMD     0
     #define DEBUG_MOTOR_STEP    0
+    #define DEBUG_NEXTION       0
+    #define DEBUG_NEXTION_VERBOSE 0
 #endif
 
 // Intervalle affichage debug (millisecondes) - utilisé si debug actif
@@ -366,6 +372,71 @@
 // Limites PWM (0-255)
 #define PWM_MIN      0     // PWM minimum (arrêt)
 #define PWM_MAX      255   // PWM maximum (pleine vitesse)
+
+// ════════════════════════════════════════════════════════════════
+// CONFIGURATION NEXTION DISPLAY (Affichage tactile optionnel)
+// ════════════════════════════════════════════════════════════════
+// Écran Nextion pour affichage positions Az/El (actuelle et cible)
+// Communication UART avec terminateurs 0xFF 0xFF 0xFF
+// ════════════════════════════════════════════════════════════════
+
+#define ENABLE_NEXTION      1           // Activer affichage Nextion (1=ON, 0=OFF)
+#define TEST_NEXTION        1           // Test Nextion (nécessite ENABLE_NEXTION=1)
+
+// ─────────────────────────────────────────────────────────────────
+// PORT SÉRIE NEXTION
+// ─────────────────────────────────────────────────────────────────
+// Arduino Mega 2560 dispose de 4 ports série:
+//   Serial  : USB (utilisé pour debug ou Easycom selon USE_ETHERNET)
+//   Serial1 : pins 18 (TX1) et 19 (RX1) - RECOMMANDÉ pour Nextion
+//   Serial2 : pins 16 (TX2) et 17 (RX2)
+//   Serial3 : pins 14 (TX3) et 15 (RX3)
+//
+// IMPORTANT: Seul TX (18/16/14) est connecté au Nextion RX
+//            RX Nextion (19/17/15) peut rester déconnecté si pas de touch events
+
+#define NEXTION_SERIAL      Serial1     // Port série Nextion (Serial1 = pins 18/19)
+#define NEXTION_BAUD        9600        // Vitesse communication Nextion
+                                        // Valeurs standards: 9600, 115200
+                                        // DOIT correspondre au réglage écran Nextion!
+
+// ─────────────────────────────────────────────────────────────────
+// TIMING MISE À JOUR NEXTION
+// ─────────────────────────────────────────────────────────────────
+#define NEXTION_UPDATE_INTERVAL  500    // Intervalle mise à jour affichage (ms)
+                                        // 500ms = rafraîchissement 2× par seconde
+                                        // Ne pas descendre sous 100ms (surcharge)
+
+// ─────────────────────────────────────────────────────────────────
+// CONTRÔLE MANUEL TACTILE (Boutons Nextion)
+// ─────────────────────────────────────────────────────────────────
+// Incréments utilisés lors de l'appui sur les boutons CW, CCW, UP, DOWN
+// Les boutons envoient des commandes Easycom incrémentales tant qu'ils
+// sont maintenus enfoncés (position cible = position actuelle + incrément)
+//
+// Recommandations:
+//   - Moteurs lents EME: 5.0° à 10.0° pour azimuth
+//   - Moteurs lents EME: 2.0° à 5.0° pour élévation
+//   - Ajuster selon vitesse moteurs (21 min/360° = 0.29°/sec)
+
+#define MANUAL_INCREMENT_AZ  5.0        // Incrément manuel azimuth (degrés, 1 décimale)
+#define MANUAL_INCREMENT_EL  2.0        // Incrément manuel élévation (degrés, 1 décimale)
+
+// ─────────────────────────────────────────────────────────────────
+// NOMS COMPOSANTS NEXTION (personnalisable selon votre IHM)
+// ─────────────────────────────────────────────────────────────────
+// Ces noms doivent correspondre aux composants texte dans votre
+// fichier .HMI Nextion Editor.
+//
+// Composants texte attendus (sur page 0):
+//   tTitle    : Titre écran (ex: "EME ROTATOR")
+//   tAzCur    : Position azimuth actuelle (ex: "123.5°")
+//   tAzTgt    : Position azimuth cible (ex: "180.0°" ou "---")
+//   tElCur    : Position élévation actuelle (ex: "45.2°")
+//   tElTgt    : Position élévation cible (ex: "30.0°" ou "---")
+//   tStatus   : État système (ex: "ARRETE", "EN MOUVEMENT", "ERREUR")
+//
+// Si vos composants ont des noms différents, modifiez nextion.cpp
 
 // ════════════════════════════════════════════════════════════════
 // FIN CONFIGURATION

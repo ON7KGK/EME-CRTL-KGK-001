@@ -39,6 +39,10 @@
   #include "easycom.h"
 #endif
 
+#if ENABLE_NEXTION
+  #include "nextion.h"
+#endif
+
 // ════════════════════════════════════════════════════════════════
 // VARIABLES GLOBALES TIMING
 // ════════════════════════════════════════════════════════════════
@@ -83,6 +87,7 @@ void setup() {
         Serial.print(F("  - TEST_LIMITS:      ")); Serial.println(TEST_LIMITS ? F("ON") : F("OFF"));
         Serial.print(F("  - TEST_NETWORK:     ")); Serial.println(TEST_NETWORK ? F("ON") : F("OFF"));
         Serial.print(F("  - TEST_CALIBRATION: ")); Serial.println(TEST_CALIBRATION ? F("ON") : F("OFF"));
+        Serial.print(F("  - ENABLE_NEXTION:   ")); Serial.println(ENABLE_NEXTION ? F("ON") : F("OFF"));
         Serial.println(F(""));
     #endif
 
@@ -136,6 +141,15 @@ void setup() {
             // Continuer sans réseau (contrôle série USB possible)
         }
         delay(500);
+    #endif
+
+    // ─────────────────────────────────────────────────────────────
+    // ÉTAPE 6 : AFFICHAGE NEXTION (Optionnel)
+    // ─────────────────────────────────────────────────────────────
+
+    #if ENABLE_NEXTION && TEST_NEXTION
+        setupNextion();
+        delay(100);
     #endif
 
     // ─────────────────────────────────────────────────────────────
@@ -233,6 +247,24 @@ void loop() {
 
     #if TEST_NETWORK
         handleNetwork();
+    #endif
+
+    // ─────────────────────────────────────────────────────────────
+    // ÉTAPE 6 : AFFICHAGE NEXTION ET CONTRÔLE TACTILE
+    // ─────────────────────────────────────────────────────────────
+
+    #if ENABLE_NEXTION && TEST_NEXTION
+        // Lecture événements tactiles (boutons CW, CCW, UP, DOWN, STOP)
+        readNextionTouch();
+
+        // Gestion boutons → envoi commandes Easycom incrémentales
+        handleNextionButtons();
+
+        // Mise à jour affichage positions (Az/El actuelle et cible)
+        updateNextion();
+
+        // Mise à jour indicateurs état (direction moteurs, mode)
+        updateNextionIndicators();
     #endif
 
     // ─────────────────────────────────────────────────────────────
