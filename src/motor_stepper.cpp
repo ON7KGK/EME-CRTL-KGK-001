@@ -1,27 +1,37 @@
 // ════════════════════════════════════════════════════════════════
-// EME ROTATOR CONTROLLER - Moteurs Pas-à-Pas (Implementation)
+// EME ROTATOR CONTROLLER - Moteurs Pas-à-Pas (Simple digitalWrite)
 // ════════════════════════════════════════════════════════════════
 // Fichier: motor_stepper.cpp
-// Description: Contrôle moteurs TB6600 - Code fonctionnel K3NG
+// Description: Contrôle moteurs TB6600 - micros() timing, 1 step/call
 // ════════════════════════════════════════════════════════════════
 
+#include "config.h"
+
+// Ce fichier n'est compilé que si USE_NANO_STEPPER est désactivé
+#if !USE_NANO_STEPPER
+
 #include "motor_stepper.h"
-#include "encoder_ssi.h"  // Pour accès currentAz, currentEl
+#include "encoder_ssi.h"
 
 // ════════════════════════════════════════════════════════════════
 // VARIABLES GLOBALES
 // ════════════════════════════════════════════════════════════════
 
-// Position cible (-1 = pas de cible active)
 float targetAz = -1.0;
 float targetEl = -1.0;
 
-// État mouvement
 bool movingAz = false;
 bool movingEl = false;
 
-// Boutons configurés
 bool buttonsConfigured = false;
+
+// Timing micros() pour chaque axe
+unsigned long lastStepTimeAz = 0;
+unsigned long lastStepTimeEl = 0;
+
+// Direction courante (pour éviter changements pendant step)
+int currentDirAz = LOW;
+int currentDirEl = LOW;
 
 // ════════════════════════════════════════════════════════════════
 // INITIALISATION
@@ -42,89 +52,66 @@ void setupMotors() {
         digitalWrite(EL_DIR, LOW);
     #endif
 
-    // Configuration fins de course (INPUT_PULLUP pour NC)
     pinMode(LIMIT_AZ, INPUT_PULLUP);
     pinMode(LIMIT_EL, INPUT_PULLUP);
 
     #if DEBUG_SERIAL
-        Serial.println(F("=== MOTEURS TB6600 INITIALISÉS ==="));
-        Serial.print(F("Vitesse max: ")); Serial.print(SPEED_MAX); Serial.println(F(" µs"));
-        Serial.print(F("Vitesse lente: ")); Serial.print(SPEED_SLOW); Serial.println(F(" µs"));
-        Serial.print(F("Tolérance: ")); Serial.print(POSITION_TOLERANCE); Serial.println(F("°"));
+        Serial.println(F("=== MOTEURS TB6600 (Simple) ==="));
+        Serial.print(F("AZ: STEP=")); Serial.print(AZ_STEP);
+        Serial.print(F(" DIR=")); Serial.println(AZ_DIR);
+        Serial.print(F("EL: STEP=")); Serial.print(EL_STEP);
+        Serial.print(F(" DIR=")); Serial.println(EL_DIR);
     #endif
+
 }
 
 // ════════════════════════════════════════════════════════════════
-// EXÉCUTION STEP (avec sécurité fin de course)
+// STEP UNIQUE (non-bloquant, timing géré par appelant)
 // ════════════════════════════════════════════════════════════════
 
-void doStep(int pinStep, int pinDir, int direction, int delayUs, int limitPin) {
-    // SÉCURITÉ: Vérifier fin de course AVANT de bouger
-    // NC en série: LOW = circuit ouvert = fin de course atteinte
-    if (digitalRead(limitPin) == LOW) {
-        #if DEBUG_MOTOR_STEP
-            Serial.println(F("[LIMIT] Fin de course!"));
-        #endif
-        return;  // Ne pas bouger
-    }
-
-    // Exécuter le step
-    digitalWrite(pinDir, direction);
-    digitalWrite(pinStep, HIGH);
-    delayMicroseconds(delayUs);
-    digitalWrite(pinStep, LOW);
-    delayMicroseconds(delayUs);
-}
-
-// Surcharge sans limitPin (pour compatibilité)
-void doStep(int pinStep, int pinDir, int direction, int delayUs) {
-    digitalWrite(pinDir, direction);
-    digitalWrite(pinStep, HIGH);
-    delayMicroseconds(delayUs);
-    digitalWrite(pinStep, LOW);
-    delayMicroseconds(delayUs);
+inline void singleStep(uint8_t stepPin) {
+    digitalWrite(stepPin, HIGH);
+    delayMicroseconds(5);  // Pulse minimum 2.5µs pour TB6600
+    digitalWrite(stepPin, LOW);
 }
 
 // ════════════════════════════════════════════════════════════════
-// CONTRÔLE PRINCIPAL MOTEURS (Asservissement)
+// CONTRÔLE PRINCIPAL MOTEURS (1 step par appel, sans timing)
 // ════════════════════════════════════════════════════════════════
 
 void updateMotorControl() {
     // ─────────────────────────────────────────────────────────────
-    // ASSERVISSEMENT AZIMUTH
+    // AZIMUTH - 10 steps par appel, vitesse variable selon distance
     // ─────────────────────────────────────────────────────────────
 
     #if MOTOR_AZ_TYPE == MOTOR_STEPPER
         if (targetAz >= 0) {
-            // Calcul erreur normalisée (-180° à +180°)
             float errAz = targetAz - currentAz;
             if (errAz > 180) errAz -= 360;
             if (errAz < -180) errAz += 360;
 
-            // Vérifier si position atteinte
             if (abs(errAz) > POSITION_TOLERANCE) {
-                // Sélection vitesse (rapide si loin, lent si proche)
-                int speed = (abs(errAz) > SPEED_SWITCH_THRESHOLD) ? SPEED_MAX : SPEED_SLOW;
+                if (digitalRead(LIMIT_AZ) == HIGH) {
+                    digitalWrite(AZ_DIR, (errAz > 0) ? HIGH : LOW);
 
-                // Direction: HIGH si erreur positive (CW), LOW si négative (CCW)
-                int direction = (errAz > 0) ? HIGH : LOW;
+                    // Vitesse variable: rapide si loin, lent si proche
+                    int stepDelay = (abs(errAz) > SPEED_SWITCH_THRESHOLD) ? SPEED_FAST : SPEED_SLOW;
 
-                // Exécuter 1 step avec vérification fin de course
-                doStep(AZ_STEP, AZ_DIR, direction, speed, LIMIT_AZ);
-                movingAz = true;
+                    // Faire 10 steps (burst)
+                    for (int i = 0; i < 10; i++) {
+                        digitalWrite(AZ_STEP, HIGH);
+                        delayMicroseconds(stepDelay);
+                        digitalWrite(AZ_STEP, LOW);
+                        delayMicroseconds(stepDelay);
+                    }
 
-                #if DEBUG_MOTOR_STEP
-                    Serial.print(F("[AZ] err=")); Serial.print(errAz, 2);
-                    Serial.print(F(" spd=")); Serial.println(speed);
-                #endif
+                    movingAz = true;
+                } else {
+                    movingAz = false;
+                }
             } else {
-                // Position atteinte
                 targetAz = -1.0;
                 movingAz = false;
-
-                #if DEBUG_MOTOR_CMD
-                    Serial.println(F("[MOTOR] Az: Position atteinte"));
-                #endif
             }
         } else {
             movingAz = false;
@@ -132,7 +119,7 @@ void updateMotorControl() {
     #endif
 
     // ─────────────────────────────────────────────────────────────
-    // ASSERVISSEMENT ÉLÉVATION
+    // ÉLÉVATION - 10 steps par appel, vitesse variable selon distance
     // ─────────────────────────────────────────────────────────────
 
     #if MOTOR_EL_TYPE == MOTOR_STEPPER
@@ -140,28 +127,52 @@ void updateMotorControl() {
             float errEl = targetEl - currentEl;
 
             if (abs(errEl) > POSITION_TOLERANCE) {
-                int speed = (abs(errEl) > SPEED_SWITCH_THRESHOLD) ? SPEED_MAX : SPEED_SLOW;
-                int direction = (errEl > 0) ? HIGH : LOW;
+                if (digitalRead(LIMIT_EL) == HIGH) {
+                    digitalWrite(EL_DIR, (errEl > 0) ? HIGH : LOW);
 
-                doStep(EL_STEP, EL_DIR, direction, speed, LIMIT_EL);
-                movingEl = true;
+                    // Vitesse variable: rapide si loin, lent si proche
+                    int stepDelay = (abs(errEl) > SPEED_SWITCH_THRESHOLD) ? SPEED_FAST : SPEED_SLOW;
 
-                #if DEBUG_MOTOR_STEP
-                    Serial.print(F("[EL] err=")); Serial.print(errEl, 2);
-                    Serial.print(F(" spd=")); Serial.println(speed);
-                #endif
+                    for (int i = 0; i < 10; i++) {
+                        digitalWrite(EL_STEP, HIGH);
+                        delayMicroseconds(stepDelay);
+                        digitalWrite(EL_STEP, LOW);
+                        delayMicroseconds(stepDelay);
+                    }
+
+                    movingEl = true;
+                } else {
+                    movingEl = false;
+                }
             } else {
                 targetEl = -1.0;
                 movingEl = false;
-
-                #if DEBUG_MOTOR_CMD
-                    Serial.println(F("[MOTOR] El: Position atteinte"));
-                #endif
             }
         } else {
             movingEl = false;
         }
     #endif
+}
+
+// ════════════════════════════════════════════════════════════════
+// FONCTIONS LEGACY doStep
+// ════════════════════════════════════════════════════════════════
+
+void doStep(int pinStep, int pinDir, int direction, int delayUs, int limitPin) {
+    if (digitalRead(limitPin) == LOW) return;
+    digitalWrite(pinDir, direction);
+    digitalWrite(pinStep, HIGH);
+    delayMicroseconds(delayUs);
+    digitalWrite(pinStep, LOW);
+    delayMicroseconds(delayUs);
+}
+
+void doStep(int pinStep, int pinDir, int direction, int delayUs) {
+    digitalWrite(pinDir, direction);
+    digitalWrite(pinStep, HIGH);
+    delayMicroseconds(delayUs);
+    digitalWrite(pinStep, LOW);
+    delayMicroseconds(delayUs);
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -173,9 +184,8 @@ void stopAllMotors() {
     targetEl = -1.0;
     movingAz = false;
     movingEl = false;
-
     #if DEBUG_MOTOR_CMD
-        Serial.println(F("[MOTOR] STOP - Arrêt immédiat"));
+        Serial.println(F("[MOTOR] STOP"));
     #endif
 }
 
@@ -184,7 +194,6 @@ void stopAllMotors() {
 // ════════════════════════════════════════════════════════════════
 
 void checkManualButtons() {
-    // Configuration pins boutons (une seule fois)
     if (!buttonsConfigured) {
         pinMode(BTN_CW, INPUT_PULLUP);
         pinMode(BTN_CCW, INPUT_PULLUP);
@@ -194,114 +203,57 @@ void checkManualButtons() {
         buttonsConfigured = true;
     }
 
-    // ─────────────────────────────────────────────────────────────
-    // BOUTON STOP (Priorité absolue)
-    // ─────────────────────────────────────────────────────────────
-
     if (digitalRead(BTN_STOP) == LOW) {
         stopAllMotors();
         return;
     }
 
-    // ─────────────────────────────────────────────────────────────
-    // BOUTONS AZIMUTH (CW / CCW)
-    // ─────────────────────────────────────────────────────────────
-
     #if MOTOR_AZ_TYPE == MOTOR_STEPPER
         if (digitalRead(BTN_CW) == LOW) {
-            for (int i = 0; i < MANUAL_STEP_SIZE; i++) {
-                doStep(AZ_STEP, AZ_DIR, HIGH, SPEED_SLOW, LIMIT_AZ);
-            }
-            #if DEBUG_MOTOR_CMD
-                Serial.println(F("[BTN] CW"));
-            #endif
+            doStep(AZ_STEP, AZ_DIR, HIGH, SPEED_SLOW, LIMIT_AZ);
         }
-
         if (digitalRead(BTN_CCW) == LOW) {
-            for (int i = 0; i < MANUAL_STEP_SIZE; i++) {
-                doStep(AZ_STEP, AZ_DIR, LOW, SPEED_SLOW, LIMIT_AZ);
-            }
-            #if DEBUG_MOTOR_CMD
-                Serial.println(F("[BTN] CCW"));
-            #endif
+            doStep(AZ_STEP, AZ_DIR, LOW, SPEED_SLOW, LIMIT_AZ);
         }
     #endif
 
-    // ─────────────────────────────────────────────────────────────
-    // BOUTONS ÉLÉVATION (UP / DOWN)
-    // ─────────────────────────────────────────────────────────────
-
     #if MOTOR_EL_TYPE == MOTOR_STEPPER
         if (digitalRead(BTN_UP) == LOW) {
-            for (int i = 0; i < MANUAL_STEP_SIZE; i++) {
-                doStep(EL_STEP, EL_DIR, HIGH, SPEED_SLOW, LIMIT_EL);
-            }
-            #if DEBUG_MOTOR_CMD
-                Serial.println(F("[BTN] UP"));
-            #endif
+            doStep(EL_STEP, EL_DIR, HIGH, SPEED_SLOW, LIMIT_EL);
         }
-
         if (digitalRead(BTN_DOWN) == LOW) {
-            for (int i = 0; i < MANUAL_STEP_SIZE; i++) {
-                doStep(EL_STEP, EL_DIR, LOW, SPEED_SLOW, LIMIT_EL);
-            }
-            #if DEBUG_MOTOR_CMD
-                Serial.println(F("[BTN] DOWN"));
-            #endif
+            doStep(EL_STEP, EL_DIR, LOW, SPEED_SLOW, LIMIT_EL);
         }
     #endif
 }
 
 // ════════════════════════════════════════════════════════════════
-// CALCUL ERREUR ANGULAIRE NORMALISÉE
+// FONCTIONS UTILITAIRES
 // ════════════════════════════════════════════════════════════════
 
 float calculateAngularError(float target, float current) {
     float error = target - current;
-
-    // Normaliser dans plage -180° à +180° (chemin le plus court)
-    if (error > 180.0) {
-        error -= 360.0;
-    } else if (error < -180.0) {
-        error += 360.0;
-    }
-
+    if (error > 180.0) error -= 360.0;
+    else if (error < -180.0) error += 360.0;
     return error;
 }
 
-// ════════════════════════════════════════════════════════════════
-// CALCUL STEPS POUR ANGLE
-// ════════════════════════════════════════════════════════════════
-
 long calculateStepsForAngle(float angleDegrees, float gearRatio) {
-    // Formule: steps = (angle / 360°) × steps_per_rev × gear_ratio
     return (long)((angleDegrees / 360.0) * STEPS_PER_REV_MOTOR * gearRatio);
 }
 
-// ════════════════════════════════════════════════════════════════
-// DEBUG AFFICHAGE
-// ════════════════════════════════════════════════════════════════
-
 void printMotorDebug() {
-    Serial.print(F("[MOTOR] Az: tgt="));
-    if (targetAz >= 0) {
-        Serial.print(targetAz, 1);
-    } else {
-        Serial.print(F("--"));
-    }
-    Serial.print(F(" cur="));
+    Serial.print(F("[MOTOR] Az:"));
+    Serial.print(targetAz >= 0 ? targetAz : -1, 1);
+    Serial.print(F("/"));
     Serial.print(currentAz, 1);
-    Serial.print(F(" mov="));
-    Serial.print(movingAz ? F("Y") : F("N"));
+    Serial.print(movingAz ? F(" MOV") : F(" ---"));
 
-    Serial.print(F(" | El: tgt="));
-    if (targetEl >= 0) {
-        Serial.print(targetEl, 1);
-    } else {
-        Serial.print(F("--"));
-    }
-    Serial.print(F(" cur="));
+    Serial.print(F(" El:"));
+    Serial.print(targetEl >= 0 ? targetEl : -1, 1);
+    Serial.print(F("/"));
     Serial.print(currentEl, 1);
-    Serial.print(F(" mov="));
-    Serial.println(movingEl ? F("Y") : F("N"));
+    Serial.println(movingEl ? F(" MOV") : F(" ---"));
 }
+
+#endif // !USE_NANO_STEPPER

@@ -21,8 +21,14 @@
 #endif
 
 #if TEST_MOTORS
-  #if (MOTOR_AZ_TYPE == MOTOR_STEPPER || MOTOR_EL_TYPE == MOTOR_STEPPER)
-    #include "motor_stepper.h"
+  #if USE_NANO_STEPPER
+    // Mode Nano: communication UART avec Arduino Nano dédié
+    #include "motor_nano.h"
+  #else
+    // Mode direct: contrôle moteurs par le Mega
+    #if (MOTOR_AZ_TYPE == MOTOR_STEPPER || MOTOR_EL_TYPE == MOTOR_STEPPER)
+      #include "motor_stepper.h"
+    #endif
   #endif
 
   #if (MOTOR_AZ_TYPE == MOTOR_DC_BRUSHED || MOTOR_EL_TYPE == MOTOR_DC_BRUSHED)
@@ -101,13 +107,19 @@ void setup() {
     #endif
 
     // ─────────────────────────────────────────────────────────────
-    // ÉTAPE 2 : MOTEURS (Stepper ou DC selon config)
+    // ÉTAPE 2 : MOTEURS (Nano, Stepper direct ou DC selon config)
     // ─────────────────────────────────────────────────────────────
 
     #if TEST_MOTORS
-        #if (MOTOR_AZ_TYPE == MOTOR_STEPPER || MOTOR_EL_TYPE == MOTOR_STEPPER)
-            setupMotors();
+        #if USE_NANO_STEPPER
+            // Mode Nano: initialiser communication UART
+            setupMotorNano();
             delay(100);
+        #else
+            #if (MOTOR_AZ_TYPE == MOTOR_STEPPER || MOTOR_EL_TYPE == MOTOR_STEPPER)
+                setupMotors();
+                delay(100);
+            #endif
         #endif
 
         #if (MOTOR_AZ_TYPE == MOTOR_DC_BRUSHED || MOTOR_EL_TYPE == MOTOR_DC_BRUSHED)
@@ -181,11 +193,11 @@ void loop() {
     // ÉTAPE 3 : BOUTONS MANUELS (CW/CCW/UP/DOWN/STOP)
     // ─────────────────────────────────────────────────────────────
 
-    #if TEST_BUTTONS && TEST_MOTORS
+    #if TEST_BUTTONS && TEST_MOTORS && !USE_NANO_STEPPER
+        // Boutons manuels uniquement en mode direct (pas en mode Nano)
         #if (MOTOR_AZ_TYPE == MOTOR_STEPPER || MOTOR_EL_TYPE == MOTOR_STEPPER)
             checkManualButtons();
         #endif
-        // TODO: Implémenter boutons manuels pour moteurs DC si nécessaire
     #endif
 
     // ─────────────────────────────────────────────────────────────
@@ -201,42 +213,51 @@ void loop() {
     // ─────────────────────────────────────────────────────────────
 
     #if TEST_MOTORS
-        // Vérifier sécurité avant mouvement
-        #if TEST_LIMITS
-            bool azSafe = isAzimuthSafe();
-            bool elSafe = isElevationSafe();
+        #if USE_NANO_STEPPER
+            // Mode Nano: le Nano gère les fins de course localement
+            // On envoie juste les commandes et on lit les réponses
+            updateMotorNano();
         #else
-            bool azSafe = true;  // Pas de vérification limite si module désactivé
-            bool elSafe = true;
-        #endif
+            // Mode direct: vérifier sécurité avant mouvement
+            #if TEST_LIMITS
+                bool azSafe = isAzimuthSafe();
+                bool elSafe = isElevationSafe();
+            #else
+                bool azSafe = true;
+                bool elSafe = true;
+            #endif
 
-        // Asservissement stepper
-        #if (MOTOR_AZ_TYPE == MOTOR_STEPPER || MOTOR_EL_TYPE == MOTOR_STEPPER)
-            if (azSafe && elSafe) {
-                updateMotorControl();
-            } else {
-                // Limite atteinte, arrêt sécurité
-                #if (MOTOR_AZ_TYPE == MOTOR_STEPPER || MOTOR_EL_TYPE == MOTOR_STEPPER)
+            // Asservissement stepper direct
+            #if (MOTOR_AZ_TYPE == MOTOR_STEPPER || MOTOR_EL_TYPE == MOTOR_STEPPER)
+                if (azSafe && elSafe) {
+                    updateMotorControl();
+                } else {
                     if (!azSafe) {
                         extern float targetAz;
-                        targetAz = -1.0;  // Cancel azimuth target
+                        targetAz = -1.0;
                     }
                     if (!elSafe) {
                         extern float targetEl;
-                        targetEl = -1.0;  // Cancel elevation target
+                        targetEl = -1.0;
                     }
-                #endif
-            }
+                }
+            #endif
         #endif
 
         // Asservissement DC
         #if (MOTOR_AZ_TYPE == MOTOR_DC_BRUSHED || MOTOR_EL_TYPE == MOTOR_DC_BRUSHED)
-            if (azSafe && elSafe) {
+            #if TEST_LIMITS
+                bool azSafeDC = isAzimuthSafe();
+                bool elSafeDC = isElevationSafe();
+            #else
+                bool azSafeDC = true;
+                bool elSafeDC = true;
+            #endif
+            if (azSafeDC && elSafeDC) {
                 updateMotorControlDC();
             } else {
-                // Limite atteinte, arrêt moteurs DC
-                if (!azSafe) stopMotorDC(1);
-                if (!elSafe) stopMotorDC(2);
+                if (!azSafeDC) stopMotorDC(1);
+                if (!elSafeDC) stopMotorDC(2);
             }
         #endif
     #endif
@@ -283,8 +304,12 @@ void loop() {
             #endif
 
             #if TEST_MOTORS
-                #if (MOTOR_AZ_TYPE == MOTOR_STEPPER || MOTOR_EL_TYPE == MOTOR_STEPPER)
-                    printMotorDebug();
+                #if USE_NANO_STEPPER
+                    printMotorNanoDebug();
+                #else
+                    #if (MOTOR_AZ_TYPE == MOTOR_STEPPER || MOTOR_EL_TYPE == MOTOR_STEPPER)
+                        printMotorDebug();
+                    #endif
                 #endif
                 #if (MOTOR_AZ_TYPE == MOTOR_DC_BRUSHED || MOTOR_EL_TYPE == MOTOR_DC_BRUSHED)
                     printMotorDCDebug();

@@ -23,6 +23,10 @@ bool networkInitialized = false;
 // Timing polling
 unsigned long lastNetworkPollTime = 0;
 
+// Timeout connexion client (mode Serial)
+unsigned long lastCommandTime = 0;
+#define CLIENT_TIMEOUT_MS 5000  // 5 secondes sans commande = déconnecté
+
 // ════════════════════════════════════════════════════════════════
 // MODE ETHERNET W5500 (si USE_ETHERNET=1)
 // ════════════════════════════════════════════════════════════════
@@ -191,6 +195,9 @@ void processReceivedChar(char c) {
             rxBuffer[rxBufferIndex] = '\0';
             String command = String(rxBuffer);
 
+            // Mettre à jour timestamp dernière commande (pour timeout)
+            lastCommandTime = millis();
+
             // Parser commande Easycom
             parseEasycomCommand(command);
 
@@ -230,7 +237,10 @@ bool isClientConnected() {
     #if USE_ETHERNET
         return clientConnected && currentClient.connected();
     #else
-        return true;  // Serial toujours "connecté"
+        // Mode Serial: connecté si commande reçue dans les dernières 5 secondes
+        // lastCommandTime=0 au démarrage → considéré déconnecté jusqu'à première commande
+        if (lastCommandTime == 0) return false;
+        return (millis() - lastCommandTime) < CLIENT_TIMEOUT_MS;
     #endif
 }
 

@@ -49,7 +49,33 @@ void parseEasycomCommand(String command) {
     // COMMANDES ARRÊT (Priorité absolue)
     // ─────────────────────────────────────────────────────────────
 
-    if (command == "S" || command == "SA" || command == "SE" || command == "STOP") {
+    // ─────────────────────────────────────────────────────────────
+    // COMMANDES ARRÊT: S, SA, SE, SA SE, STOP, ;
+    // PstRotator peut envoyer "SA SE" (les deux ensemble)
+    // ─────────────────────────────────────────────────────────────
+    bool isStopCmd = false;
+
+    // Vérifier différents formats de commande STOP
+    if (command == "S" || command == "STOP" || command == ";") {
+        isStopCmd = true;
+    }
+    // SA seul ou SA suivi d'espace (ex: "SA SE")
+    else if (command == "SA" || command.startsWith("SA ")) {
+        isStopCmd = true;
+    }
+    // SE seul ou SE suivi d'espace
+    else if (command == "SE" || command.startsWith("SE ")) {
+        isStopCmd = true;
+    }
+    // Contient SA ou SE quelque part (ex: "SA SE", "SASE")
+    else if (command.indexOf("SA") != -1 || command.indexOf("SE") != -1) {
+        // Vérifier que ce n'est pas une commande de calibration (ex: S45.0)
+        if (!(command.startsWith("S") && command.length() > 1 && isDigit(command.charAt(1)))) {
+            isStopCmd = true;
+        }
+    }
+
+    if (isStopCmd) {
         targetAz = -1.0;
         targetEl = -1.0;
 

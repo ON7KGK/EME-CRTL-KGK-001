@@ -136,4 +136,19 @@ void printEasycomDebug(String command);
  */
 void printEncoderRawDebug();
 
+// ════════════════════════════════════════════════════════════════
+// DÉTECTION MODE TRACKING
+// ════════════════════════════════════════════════════════════════
+// PstRotator en mode tracking envoie des commandes fréquentes
+// (toutes les 1-5 secondes) avec petits incréments de position.
+// On détecte cela en comptant les commandes dans une fenêtre de temps.
+
+extern bool isTracking;  // true si mode tracking détecté
+
+/**
+ * Mise à jour détection tracking
+ * Doit être appelé dans loop() pour détecter timeout tracking
+ */
+void updateTrackingDetection();
+
 #endif // EASYCOM_H

@@ -12,7 +12,11 @@
 
 #include "encoder_ssi.h"    // Pour currentAz, currentEl
 #include "motor_stepper.h"  // Pour targetAz, targetEl
-#include "easycom.h"        // Pour parseEasycom() (commandes manuelles)
+#include "easycom.h"        // Pour parseEasycom() (commandes automatiques)
+#include "network.h"        // Pour isClientConnected()
+#if USE_NANO_STEPPER
+    #include "motor_nano.h" // Pour sendManualMove(), nanoLimitAz, nanoLimitEl
+#endif
 
 // ════════════════════════════════════════════════════════════════
 // VARIABLES EXTERNES
@@ -39,7 +43,17 @@ bool bDOWN_pressed = false;  // Bouton DOWN enfoncé
 bool bSTOP_pressed = false;  // Bouton STOP enfoncé
 
 unsigned long lastButtonCommand = 0;  // Dernière commande bouton (throttling)
-#define BUTTON_COMMAND_INTERVAL 500   // Intervalle commandes bouton (ms)
+#define BUTTON_COMMAND_INTERVAL 50    // Intervalle minimum entre commandes (ms)
+
+// États précédents boutons pour détecter fronts (appui/relâchement)
+bool prevCW = false;
+bool prevCCW = false;
+bool prevUP = false;
+bool prevDOWN = false;
+bool prevSTOP = false;
+
+// État mouvement manuel en cours
+bool manualMoving = false;
 
 // ─────────────────────────────────────────────────────────────────
 // IDs COMPOSANTS NEXTION (doivent correspondre au fichier .HMI)
@@ -48,11 +62,11 @@ unsigned long lastButtonCommand = 0;  // Dernière commande bouton (throttling)
 // Vérifiez-les dans votre fichier .HMI (attribut "id" de chaque bouton).
 // Si différents, modifiez les valeurs ci-dessous.
 
-#define NEXTION_ID_BCW   2   // ID bouton CW
-#define NEXTION_ID_BCCW  3   // ID bouton CCW
-#define NEXTION_ID_BUP   4   // ID bouton UP
-#define NEXTION_ID_BDOWN 5   // ID bouton DOWN
-#define NEXTION_ID_BSTOP 6   // ID bouton STOP
+#define NEXTION_ID_BCW   6    // ID bouton CW (b0)
+#define NEXTION_ID_BCCW  7    // ID bouton CCW (b1)
+#define NEXTION_ID_BUP   8    // ID bouton UP (b2)
+#define NEXTION_ID_BDOWN 9    // ID bouton DOWN (b3)
+#define NEXTION_ID_BSTOP 10   // ID bouton STOP (b4)
 
 // ════════════════════════════════════════════════════════════════
 // INITIALISATION
@@ -157,19 +171,87 @@ void updateNextion() {
     }
 
     // ─────────────────────────────────────────────────────────────
-    // INDICATEUR MOUVEMENT (optionnel)
+    // INDICATEUR STATUT SYSTÈME (tStatus)
+    // Priorité: 1) Fins de course (avec direction)  2) Connexion client
     // ─────────────────────────────────────────────────────────────
-    // Si cible active ET différente de position actuelle → en mouvement
-    bool moving = false;
-    if (targetAz >= 0.0 && abs(targetAz - currentAz) > 0.5) moving = true;
-    if (targetEl >= 0.0 && abs(targetEl - currentEl) > 0.5) moving = true;
+    static uint8_t lastStatus = 255;  // Pour éviter envois répétés
+    // 0=OK, 1=PST OK, 2=PST DISC, 3=LIM CW, 4=LIM CCW, 5=LIM UP, 6=LIM DOWN, 7=LIMIT!(multi)
+    uint8_t newStatus = 0;
 
-    if (moving) {
-        sendToNextion("tStatus.txt=\"EN MOUVEMENT\"");
-        sendToNextion("tStatus.pco=63488");  // Couleur rouge (RGB565)
-    } else {
-        sendToNextion("tStatus.txt=\"ARRETE\"");
-        sendToNextion("tStatus.pco=2016");   // Couleur verte (RGB565)
+    #if USE_NANO_STEPPER
+        // Compter nombre de limites actives
+        uint8_t limitCount = 0;
+        if (nanoLimitCW) limitCount++;
+        if (nanoLimitCCW) limitCount++;
+        if (nanoLimitUp) limitCount++;
+        if (nanoLimitDown) limitCount++;
+
+        // Priorité 1: Fins de course (critique!)
+        if (limitCount > 1) {
+            newStatus = 7;  // LIMIT! (plusieurs)
+        } else if (nanoLimitCW) {
+            newStatus = 3;  // LIM CW
+        } else if (nanoLimitCCW) {
+            newStatus = 4;  // LIM CCW
+        } else if (nanoLimitUp) {
+            newStatus = 5;  // LIM UP
+        } else if (nanoLimitDown) {
+            newStatus = 6;  // LIM DOWN
+        } else
+    #endif
+    {
+        // Priorité 2: État connexion client
+        if (isClientConnected()) {
+            newStatus = 1;  // PST OK
+        } else {
+            newStatus = 2;  // PST DISC
+        }
+    }
+
+    // Envoyer seulement si changement
+    if (newStatus != lastStatus) {
+        lastStatus = newStatus;
+
+        switch (newStatus) {
+            case 0:  // OK (pas utilisé actuellement)
+                sendToNextion("tStatus.txt=\"OK\"");
+                sendToNextion("tStatus.pco=2016");   // Vert
+                break;
+            case 1:  // PstRotator connecté
+                sendToNextion("tStatus.txt=\"PST OK\"");
+                sendToNextion("tStatus.pco=2016");   // Vert
+                break;
+            case 2:  // PstRotator déconnecté
+                sendToNextion("tStatus.txt=\"PST DISC\"");
+                sendToNextion("tStatus.pco=65504");  // Jaune
+                break;
+            case 3:  // LIMIT CW
+                sendToNextion("tStatus.txt=\"LIM CW!\"");
+                sendToNextion("tStatus.pco=63488");  // Rouge
+                break;
+            case 4:  // LIMIT CCW
+                sendToNextion("tStatus.txt=\"LIM CCW!\"");
+                sendToNextion("tStatus.pco=63488");  // Rouge
+                break;
+            case 5:  // LIMIT UP
+                sendToNextion("tStatus.txt=\"LIM UP!\"");
+                sendToNextion("tStatus.pco=63488");  // Rouge
+                break;
+            case 6:  // LIMIT DOWN
+                sendToNextion("tStatus.txt=\"LIM DOWN!\"");
+                sendToNextion("tStatus.pco=63488");  // Rouge
+                break;
+            case 7:  // LIMIT! (plusieurs)
+                sendToNextion("tStatus.txt=\"LIMIT!\"");
+                sendToNextion("tStatus.pco=63488");  // Rouge
+                break;
+        }
+
+        #if DEBUG_NEXTION
+            const char* statusNames[] = {"OK", "PST OK", "PST DISC", "LIM CW", "LIM CCW", "LIM UP", "LIM DOWN", "LIMIT!"};
+            Serial.print(F("[NEXTION] Status: "));
+            Serial.println(statusNames[newStatus]);
+        #endif
     }
 
     #if DEBUG_NEXTION
@@ -249,29 +331,41 @@ void showNextionError(String errorMsg) {
 
 void readNextionTouch() {
     // ─────────────────────────────────────────────────────────────
-    // VÉRIFICATION DONNÉES DISPONIBLES
+    // CONSOMMER LES BYTES NON-TOUCH (accusés réception Nextion)
     // ─────────────────────────────────────────────────────────────
-    if (NEXTION_SERIAL.available() < 7) {
-        return;  // Pas assez de données (événement complet = 7 octets)
+    // Le Nextion envoie des accusés de réception (0x00, 0x01, etc.)
+    // pour chaque commande reçue. On doit les consommer pour éviter
+    // que le buffer se remplisse.
+
+    while (NEXTION_SERIAL.available() > 0) {
+        uint8_t peek = NEXTION_SERIAL.peek();
+
+        // Si c'est un événement touch (0x65), on sort de la boucle
+        if (peek == 0x65) {
+            break;
+        }
+
+        // Sinon, consommer cet octet (accusé réception ou autre)
+        NEXTION_SERIAL.read();
     }
 
     // ─────────────────────────────────────────────────────────────
-    // LECTURE ÉVÉNEMENT NEXTION
+    // VÉRIFICATION DONNÉES DISPONIBLES POUR TOUCH EVENT
+    // ─────────────────────────────────────────────────────────────
+    int avail = NEXTION_SERIAL.available();
+    if (avail < 7) {
+        return;  // Pas assez de données (événement touch = 7 octets)
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // LECTURE ÉVÉNEMENT NEXTION TOUCH
     // ─────────────────────────────────────────────────────────────
     // Format: 0x65 [Page] [Component ID] [Event] 0xFF 0xFF 0xFF
-    //         ^^^^^                       ^^^^^^ ^^^^^^^^^^^^
-    //         Header                      Touch  Terminateurs
-    //                                     0x01=Press
-    //                                     0x00=Release
 
     uint8_t header = NEXTION_SERIAL.read();
 
-    // Vérifier si c'est un événement touch (0x65)
+    // Double vérification (devrait être 0x65)
     if (header != 0x65) {
-        // Autre type événement - purger buffer
-        while (NEXTION_SERIAL.available()) {
-            NEXTION_SERIAL.read();
-        }
         return;
     }
 
@@ -289,15 +383,6 @@ void readNextionTouch() {
     // PARSING ÉVÉNEMENT (Press = 0x01, Release = 0x00)
     // ─────────────────────────────────────────────────────────────
     bool isPressed = (touchEvent == 0x01);
-
-    #if DEBUG_NEXTION_VERBOSE
-        Serial.print(F("[NEXTION TOUCH] Page="));
-        Serial.print(page);
-        Serial.print(F(" ID="));
-        Serial.print(componentID);
-        Serial.print(F(" Event="));
-        Serial.println(isPressed ? F("PRESS") : F("RELEASE"));
-    #endif
 
     // ─────────────────────────────────────────────────────────────
     // MISE À JOUR ÉTATS BOUTONS (logique mutex: 1 seul bouton actif)
@@ -361,135 +446,104 @@ void readNextionTouch() {
 }
 
 // ════════════════════════════════════════════════════════════════
-// GESTION BOUTONS TACTILES (Envoi commandes Easycom)
+// GESTION BOUTONS TACTILES (Mouvement continu tant qu'enfoncé)
 // ════════════════════════════════════════════════════════════════
 
 void handleNextionButtons() {
-    // ─────────────────────────────────────────────────────────────
-    // THROTTLING (ne pas saturer Easycom)
-    // ─────────────────────────────────────────────────────────────
     unsigned long currentTime = millis();
-    if (currentTime - lastButtonCommand < BUTTON_COMMAND_INTERVAL) {
-        return;  // Pas encore temps d'envoyer commande
+
+    // ─────────────────────────────────────────────────────────────
+    // DÉTECTION FRONTS (appui et relâchement)
+    // ─────────────────────────────────────────────────────────────
+    bool newPressCW    = (bCW_pressed && !prevCW);
+    bool newPressCCW   = (bCCW_pressed && !prevCCW);
+    bool newPressUP    = (bUP_pressed && !prevUP);
+    bool newPressDOWN  = (bDOWN_pressed && !prevDOWN);
+    bool newPressSTOP  = (bSTOP_pressed && !prevSTOP);
+
+    bool releaseCW     = (!bCW_pressed && prevCW);
+    bool releaseCCW    = (!bCCW_pressed && prevCCW);
+    bool releaseUP     = (!bUP_pressed && prevUP);
+    bool releaseDOWN   = (!bDOWN_pressed && prevDOWN);
+
+    // Sauvegarder états pour prochain cycle
+    prevCW   = bCW_pressed;
+    prevCCW  = bCCW_pressed;
+    prevUP   = bUP_pressed;
+    prevDOWN = bDOWN_pressed;
+    prevSTOP = bSTOP_pressed;
+
+    // ─────────────────────────────────────────────────────────────
+    // STOP IMMÉDIAT (bouton STOP ou relâchement)
+    // ─────────────────────────────────────────────────────────────
+    if (newPressSTOP || releaseCW || releaseCCW || releaseUP || releaseDOWN) {
+        #if USE_NANO_STEPPER
+            sendManualMove(0, 0);
+        #else
+            parseEasycomCommand("SA");
+        #endif
+        manualMoving = false;
+        return;
     }
 
     // ─────────────────────────────────────────────────────────────
-    // VÉRIFICATION BOUTON ACTIF (logique mutex: 1 seul à la fois)
+    // DÉMARRER MOUVEMENT (front montant)
     // ─────────────────────────────────────────────────────────────
-    String command = "";
+    int8_t dirAz = 0;
+    int8_t dirEl = 0;
+    bool startMove = false;
 
-    if (bSTOP_pressed) {
-        // ─────────────────────────────────────────────────────────
-        // BOUTON STOP → Commande SA (Stop All)
-        // ─────────────────────────────────────────────────────────
-        command = "SA";
-        lastButtonCommand = currentTime;
-
+    if (newPressCW) {
+        dirAz = 1;
+        startMove = true;
         #if DEBUG_NEXTION
-            Serial.println(F("[NEXTION BTN] STOP → Commande SA"));
+            Serial.println(F("[NEXTION BTN] CW pressed"));
         #endif
     }
-    else if (bCW_pressed) {
-        // ─────────────────────────────────────────────────────────
-        // BOUTON CW → Incrément azimuth (sens horaire)
-        // ─────────────────────────────────────────────────────────
-        float newTarget = currentAz + MANUAL_INCREMENT_AZ;
-
-        // Gérer wraparound 0-360°
-        if (newTarget >= 360.0) newTarget -= 360.0;
-
-        command = "AZ";
-        command += String(newTarget, 1);  // 1 décimale
-        lastButtonCommand = currentTime;
-
+    else if (newPressCCW) {
+        dirAz = -1;
+        startMove = true;
         #if DEBUG_NEXTION
-            Serial.print(F("[NEXTION BTN] CW → AZ "));
-            Serial.print(currentAz, 1);
-            Serial.print(F("° + "));
-            Serial.print(MANUAL_INCREMENT_AZ, 1);
-            Serial.print(F("° = "));
-            Serial.println(newTarget, 1);
+            Serial.println(F("[NEXTION BTN] CCW pressed"));
         #endif
     }
-    else if (bCCW_pressed) {
-        // ─────────────────────────────────────────────────────────
-        // BOUTON CCW → Décrément azimuth (sens anti-horaire)
-        // ─────────────────────────────────────────────────────────
-        float newTarget = currentAz - MANUAL_INCREMENT_AZ;
-
-        // Gérer wraparound 0-360°
-        if (newTarget < 0.0) newTarget += 360.0;
-
-        command = "AZ";
-        command += String(newTarget, 1);
-        lastButtonCommand = currentTime;
-
+    else if (newPressUP) {
+        dirEl = 1;
+        startMove = true;
         #if DEBUG_NEXTION
-            Serial.print(F("[NEXTION BTN] CCW → AZ "));
-            Serial.print(currentAz, 1);
-            Serial.print(F("° - "));
-            Serial.print(MANUAL_INCREMENT_AZ, 1);
-            Serial.print(F("° = "));
-            Serial.println(newTarget, 1);
+            Serial.println(F("[NEXTION BTN] UP pressed"));
         #endif
     }
-    else if (bUP_pressed) {
-        // ─────────────────────────────────────────────────────────
-        // BOUTON UP → Incrément élévation (montante)
-        // ─────────────────────────────────────────────────────────
-        float newTarget = currentEl + MANUAL_INCREMENT_EL;
-
-        // Limiter à 0-90° (ou limite config)
-        if (newTarget > 90.0) newTarget = 90.0;
-
-        command = "EL";
-        command += String(newTarget, 1);
-        lastButtonCommand = currentTime;
-
+    else if (newPressDOWN) {
+        dirEl = -1;
+        startMove = true;
         #if DEBUG_NEXTION
-            Serial.print(F("[NEXTION BTN] UP → EL "));
-            Serial.print(currentEl, 1);
-            Serial.print(F("° + "));
-            Serial.print(MANUAL_INCREMENT_EL, 1);
-            Serial.print(F("° = "));
-            Serial.println(newTarget, 1);
-        #endif
-    }
-    else if (bDOWN_pressed) {
-        // ─────────────────────────────────────────────────────────
-        // BOUTON DOWN → Décrément élévation (descendante)
-        // ─────────────────────────────────────────────────────────
-        float newTarget = currentEl - MANUAL_INCREMENT_EL;
-
-        // Limiter à 0-90°
-        if (newTarget < 0.0) newTarget = 0.0;
-
-        command = "EL";
-        command += String(newTarget, 1);
-        lastButtonCommand = currentTime;
-
-        #if DEBUG_NEXTION
-            Serial.print(F("[NEXTION BTN] DOWN → EL "));
-            Serial.print(currentEl, 1);
-            Serial.print(F("° - "));
-            Serial.print(MANUAL_INCREMENT_EL, 1);
-            Serial.print(F("° = "));
-            Serial.println(newTarget, 1);
+            Serial.println(F("[NEXTION BTN] DOWN pressed"));
         #endif
     }
 
     // ─────────────────────────────────────────────────────────────
-    // ENVOI COMMANDE EASYCOM (si bouton actif)
+    // ENVOYER COMMANDE MOUVEMENT
     // ─────────────────────────────────────────────────────────────
-    if (command.length() > 0) {
-        // Parser commande via fonction Easycom existante
-        // Cela met à jour targetAz/targetEl et démarre les moteurs
-        parseEasycomCommand(command);
-
-        #if DEBUG_SERIAL
-            Serial.print(F("[NEXTION → EASYCOM] "));
-            Serial.println(command);
+    if (startMove) {
+        #if USE_NANO_STEPPER
+            sendManualMove(dirAz, dirEl);
+        #else
+            // Mode direct: utiliser commandes Easycom classiques
+            if (dirAz != 0) {
+                float newTarget = currentAz + (dirAz * MANUAL_INCREMENT_AZ);
+                if (newTarget >= 360.0) newTarget -= 360.0;
+                if (newTarget < 0.0) newTarget += 360.0;
+                parseEasycomCommand("AZ" + String(newTarget, 1));
+            } else if (dirEl != 0) {
+                float newTarget = currentEl + (dirEl * MANUAL_INCREMENT_EL);
+                if (newTarget > 90.0) newTarget = 90.0;
+                if (newTarget < 0.0) newTarget = 0.0;
+                parseEasycomCommand("EL" + String(newTarget, 1));
+            }
         #endif
+        manualMoving = true;
+        lastButtonCommand = currentTime;
     }
 }
 
@@ -497,62 +551,88 @@ void handleNextionButtons() {
 // MISE À JOUR INDICATEURS ÉTAT SYSTÈME
 // ════════════════════════════════════════════════════════════════
 
+// Variables pour éviter envois répétés
+static int8_t lastSentDirAz = 0;
+static int8_t lastSentDirEl = 0;
+static uint8_t lastSentMode = 255;  // 255 = invalide pour forcer premier envoi
+
 void updateNextionIndicators() {
     // ─────────────────────────────────────────────────────────────
-    // INDICATEUR DIRECTION AZIMUTH (tAzDir)
+    // ENVOYER DIRECTION AU NEXTION (pour gestion couleurs boutons)
+    // vaDirAz: -1=CCW, 0=STOP, 1=CW
+    // vaDirEl: -1=DOWN, 0=STOP, 1=UP
     // ─────────────────────────────────────────────────────────────
-    // Logique:
-    //   - Si cible active ET différente de position actuelle
-    //   - Afficher "CW" si cible > actuelle, "CCW" sinon
-    //   - Sinon "---" (arrêté)
-
-    if (targetAz >= 0.0 && abs(targetAz - currentAz) > 0.5) {
-        // Mouvement azimuth en cours
-        if (targetAz > currentAz) {
-            // Sens horaire (shortest path peut être CCW, mais simplifié ici)
-            sendToNextion("tAzDir.txt=\"CW\"");
-            sendToNextion("tAzDir.pco=65535");  // Jaune
-        } else {
-            sendToNextion("tAzDir.txt=\"CCW\"");
-            sendToNextion("tAzDir.pco=65535");  // Jaune
+    #if USE_NANO_STEPPER
+        if (currentDirAz != lastSentDirAz) {
+            lastSentDirAz = currentDirAz;
+            // Envoyer valeur +1 pour éviter les négatifs (0=CCW, 1=STOP, 2=CW)
+            sendToNextion("vaDirAz.val=" + String(currentDirAz + 1));
         }
-    } else {
-        // Arrêté
-        sendToNextion("tAzDir.txt=\"---\"");
-        sendToNextion("tAzDir.pco=2016");  // Vert
-    }
-
-    // ─────────────────────────────────────────────────────────────
-    // INDICATEUR DIRECTION ÉLÉVATION (tElDir)
-    // ─────────────────────────────────────────────────────────────
-    if (targetEl >= 0.0 && abs(targetEl - currentEl) > 0.5) {
-        // Mouvement élévation en cours
-        if (targetEl > currentEl) {
-            sendToNextion("tElDir.txt=\"UP\"");
-            sendToNextion("tElDir.pco=65535");  // Jaune
-        } else {
-            sendToNextion("tElDir.txt=\"DOWN\"");
-            sendToNextion("tElDir.pco=65535");  // Jaune
+        if (currentDirEl != lastSentDirEl) {
+            lastSentDirEl = currentDirEl;
+            // Envoyer valeur +1 pour éviter les négatifs (0=DOWN, 1=STOP, 2=UP)
+            sendToNextion("vaDirEl.val=" + String(currentDirEl + 1));
         }
-    } else {
-        sendToNextion("tElDir.txt=\"---\"");
-        sendToNextion("tElDir.pco=2016");  // Vert
-    }
+    #endif
 
     // ─────────────────────────────────────────────────────────────
     // INDICATEUR MODE SYSTÈME (tMode)
+    // Modes: STOP, AUTO, MANUAL
     // ─────────────────────────────────────────────────────────────
-    // TODO: Implémenter détection mode PARKING depuis PstRotator
-    // Pour l'instant, afficher STOP si bouton STOP enfoncé
+    #if USE_NANO_STEPPER
+        // Déterminer mode actuel
+        // 0=STOP, 1=AUTO, 2=MANUAL
+        uint8_t currentMode = 0;  // STOP par défaut
 
-    if (bSTOP_pressed) {
-        sendToNextion("tMode.txt=\"STOP\"");
-        sendToNextion("tMode.pco=63488");  // Rouge
-    } else {
-        // Mode normal
-        sendToNextion("tMode.txt=\"---\"");
-        sendToNextion("tMode.pco=2016");  // Vert
-    }
+        if (currentSpeedMode == 2) {
+            // Mode manuel (boutons Nextion) - speed=2
+            currentMode = 2;  // MANUAL
+        } else if (currentDirAz != 0 || currentDirEl != 0) {
+            // Moteurs en mouvement en mode automatique
+            currentMode = 1;  // AUTO
+        }
+
+        // Envoyer seulement si changement
+        if (currentMode != lastSentMode) {
+            lastSentMode = currentMode;
+
+            switch (currentMode) {
+                case 0:  // STOP
+                    sendToNextion("tMode.txt=\"STOP\"");
+                    sendToNextion("tMode.pco=65535");  // Blanc
+                    break;
+                case 1:  // AUTO
+                    sendToNextion("tMode.txt=\"AUTO\"");
+                    sendToNextion("tMode.pco=2016");   // Vert
+                    break;
+                case 2:  // MANUAL
+                    sendToNextion("tMode.txt=\"MANUAL\"");
+                    sendToNextion("tMode.pco=31");     // Bleu
+                    break;
+            }
+
+            #if DEBUG_NEXTION
+                const char* modeNames[] = {"STOP", "AUTO", "MANUAL"};
+                Serial.print(F("[NEXTION] Mode: "));
+                Serial.println(modeNames[currentMode]);
+            #endif
+        }
+    #else
+        // Mode sans Nano - afficher STOP ou AUTO basé sur les cibles
+        static bool lastWasMoving = false;
+        bool isMoving = (targetAz >= 0 || targetEl >= 0);
+
+        if (isMoving != lastWasMoving) {
+            lastWasMoving = isMoving;
+            if (isMoving) {
+                sendToNextion("tMode.txt=\"AUTO\"");
+                sendToNextion("tMode.pco=2016");  // Vert
+            } else {
+                sendToNextion("tMode.txt=\"STOP\"");
+                sendToNextion("tMode.pco=65535"); // Blanc
+            }
+        }
+    #endif
 }
 
 #endif // ENABLE_NEXTION

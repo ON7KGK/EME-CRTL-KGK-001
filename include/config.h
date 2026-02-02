@@ -40,6 +40,22 @@
 #define MOTOR_EL_TYPE  MOTOR_STEPPER  // Élévation: moteur pas-à-pas
 
 // ════════════════════════════════════════════════════════════════
+// MODE NANO STEPPER (Arduino Nano dédié aux moteurs)
+// ════════════════════════════════════════════════════════════════
+// Si activé, le Mega envoie les commandes à un Arduino Nano via UART
+// Le Nano gère les steps avec AccelStepper pour un mouvement fluide
+// 0 = Contrôle direct par le Mega (motor_stepper.cpp)
+// 1 = Contrôle via Nano (motor_nano.cpp)
+
+#define USE_NANO_STEPPER    1
+
+// Port série pour communication avec le Nano
+// Serial2 = pins 16 (TX2) et 17 (RX2) sur Mega
+// Serial3 = pins 14 (TX3) et 15 (RX3) sur Mega
+#define NANO_SERIAL         Serial2
+#define NANO_BAUD           115200
+
+// ════════════════════════════════════════════════════════════════
 // PINS ENCODEURS SSI (Synchronous Serial Interface)
 // ════════════════════════════════════════════════════════════════
 // Protocole SSI: CLK commune, CS et DATA individuels par encodeur
@@ -116,8 +132,8 @@
 // État normal (aucun switch pressé): pin = HIGH
 // État alarme (1 switch ouvert): pin = LOW → BLOCAGE MOUVEMENT
 
-#define LIMIT_AZ      2    // Fin de course azimuth (série NC)
-#define LIMIT_EL      3    // Fin de course élévation (série NC)
+#define LIMIT_AZ      A10   // Fin de course azimuth (série NC) - pins 2/3 causaient blocage
+#define LIMIT_EL      A11   // Fin de course élévation (série NC)
 
 // ════════════════════════════════════════════════════════════════
 // PINS ETHERNET W5500 (Module Mini W5500)
@@ -188,10 +204,11 @@
 // VITESSES MOTEURS PAS-À-PAS (Délais en microsecondes)
 // ════════════════════════════════════════════════════════════════
 // Plus le délai est petit, plus la vitesse est élevée
-// Attention: vitesse trop élevée = perte de pas
+// Attention: vitesse trop élevée = perte de pas (TB6600 minimum ~500µs)
+// Valeurs testées et validées avec TB6600 + NEMA23
 
-#define SPEED_MAX     400    // Vitesse rapide (µs entre steps) - Mouvements loin de cible
-#define SPEED_SLOW    4000   // Vitesse lente (µs entre steps) - Approche finale précise
+#define SPEED_FAST    50     // Vitesse rapide (µs par phase) - Loin de cible (>3°)
+#define SPEED_SLOW    200    // Vitesse lente (µs par phase) - Approche finale précise (<3°)
 
 // ════════════════════════════════════════════════════════════════
 // PARAMÈTRES ASSERVISSEMENT POSITION
