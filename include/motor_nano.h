@@ -49,6 +49,9 @@ extern int8_t currentDirAz;     // Direction actuelle: 0=STOP, 1=CW, -1=CCW
 extern int8_t currentDirEl;     // Direction actuelle: 0=STOP, 1=UP, -1=DOWN
 extern uint8_t currentSpeedMode; // Mode vitesse: 0=LENT, 1=RAPIDE, 2=MANUEL
 
+// Statut communication Nano
+extern bool nanoConnected;      // true si communication OK (réponse < NANO_TIMEOUT_MS)
+
 // ════════════════════════════════════════════════════════════════
 // FONCTIONS PUBLIQUES
 // ════════════════════════════════════════════════════════════════

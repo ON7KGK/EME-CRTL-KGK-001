@@ -25,7 +25,7 @@
 #define ENCODER_POT_MT        5  // Potentiomètre multi-tours (tracking tours comme SSI_INC)
 
 // Configuration des types d'encodeurs utilisés
-#define ENCODER_AZ_TYPE  ENCODER_SSI_ABSOLUTE        // Azimuth: potentiomètre multi-tours
+#define ENCODER_AZ_TYPE  ENCODER_POT_MT        // Azimuth: potentiomètre multi-tours
 #define ENCODER_EL_TYPE  ENCODER_POT_MT  // Élévation: encodeur absolu
 
 // ════════════════════════════════════════════════════════════════
@@ -54,6 +54,11 @@
 // Serial3 = pins 14 (TX3) et 15 (RX3) sur Mega
 #define NANO_SERIAL         Serial2
 #define NANO_BAUD           115200
+
+// Pin statut communication Nano (LED ou relais)
+// HIGH = communication OK, LOW = communication perdue
+#define NANO_STATUS_PIN     22
+#define NANO_TIMEOUT_MS     2000  // Timeout 2 secondes sans réponse = communication perdue
 
 // ════════════════════════════════════════════════════════════════
 // PINS ENCODEURS SSI (Synchronous Serial Interface)
@@ -172,8 +177,8 @@
 //   - Exemple: 10 tours pot = 1 tour antenne → GEAR_RATIO_AZ = 10.0
 //   - Résolution finale = 0.35°/count × 10 = 0.035°/count
 //
-#define GEAR_RATIO_AZ        10.0   // Tours capteur pour 1 tour antenne Az
-#define GEAR_RATIO_EL        10.0    // Tours capteur pour 1 tour antenne El
+#define GEAR_RATIO_AZ        10   // Tours capteur pour 1 tour antenne Az
+#define GEAR_RATIO_EL        10    // Tours capteur pour 1 tour antenne El
 
 // ─────────────────────────────────────────────────────────────────
 // CARACTÉRISTIQUES MOTEURS PAS-À-PAS
@@ -198,7 +203,8 @@
 // Filtrage ADC (moyenne glissante pour stabiliser affichage)
 // Plus le nombre d'échantillons est élevé, plus le filtrage est fort
 // mais plus la réponse est lente
-#define POT_SAMPLES          8     // Nombre d'échantillons pour moyenne glissante (4-16 typique)
+#define POT_SAMPLES_AZ      16     // Nombre d'échantillons azimuth (plus filtré)
+#define POT_SAMPLES_EL       8     // Nombre d'échantillons élévation (4-16 typique)
 
 // ════════════════════════════════════════════════════════════════
 // VITESSES MOTEURS PAS-À-PAS (Délais en microsecondes)
@@ -215,9 +221,9 @@
 // ════════════════════════════════════════════════════════════════
 
 // Seuils de précision (degrés)
-#define POSITION_TOLERANCE     0.08   // Tolérance position atteinte (0.08°)
+#define POSITION_TOLERANCE     1   // Tolérance position atteinte (0.08°)
 #define SPEED_SWITCH_THRESHOLD 3.0    // Erreur pour switch vitesse rapide→lente (3.0°)
-#define MICRO_MOVEMENT_FILTER  0.15   // Filtre anti-vibration PstRotator (0.15°)
+#define MICRO_MOVEMENT_FILTER  0.20   // Filtre anti-vibration PstRotator (0.15°)
                                        // Commandes < 0.15° sont ignorées
 
 // ════════════════════════════════════════════════════════════════
@@ -286,13 +292,13 @@
 #define EEPROM_RESERVED_2  32
 
 // ════════════════════════════════════════════════════════════════
-// INVERSION SENS MOTEURS/ENCODEURS
+// INVERSION SENS ENCODEURS (SSI et Potentiomètres)
 // ════════════════════════════════════════════════════════════════
 // Inverser si le sens physique ne correspond pas aux commandes
+// S'applique à tous les types d'encodeurs: SSI, POT_1T, POT_MT
 
-// Inversion encodeurs SSI (HH-12)
 #define REVERSE_AZ    true  // Inverser sens azimuth (true/false)
-#define REVERSE_EL    false // Inverser sens élévation (true/false)
+#define REVERSE_EL    true  // Inverser sens élévation (true/false)
 
 // ════════════════════════════════════════════════════════════════
 // MODULES ACTIFS (Switches pour tests progressifs)

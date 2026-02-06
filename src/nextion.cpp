@@ -68,6 +68,24 @@ bool manualMoving = false;
 #define NEXTION_ID_BDOWN 9    // ID bouton DOWN (b3)
 #define NEXTION_ID_BSTOP 10   // ID bouton STOP (b4)
 
+// ─────────────────────────────────────────────────────────────────
+// IDs COMPOSANTS CALIBRATION (Textes position pour appui long)
+// ─────────────────────────────────────────────────────────────────
+#define NEXTION_ID_TAZCUR  1   // ID texte tAzCur (position Az actuelle)
+#define NEXTION_ID_TELCUR  3   // ID texte tElCur (position El actuelle)
+
+// ─────────────────────────────────────────────────────────────────
+// VARIABLES CALIBRATION PAR APPUI LONG
+// ─────────────────────────────────────────────────────────────────
+#define CALIBRATION_LONG_PRESS_MS  3000  // Durée appui long (3 secondes)
+
+unsigned long calibTouchStartAz = 0;     // Timestamp début appui tAzCur
+unsigned long calibTouchStartEl = 0;     // Timestamp début appui tElCur
+bool calibTouchingAz = false;            // Appui en cours sur tAzCur
+bool calibTouchingEl = false;            // Appui en cours sur tElCur
+bool calibFeedbackSentAz = false;        // Feedback "CAL..." déjà envoyé pour Az
+bool calibFeedbackSentEl = false;        // Feedback "CAL..." déjà envoyé pour El
+
 // ════════════════════════════════════════════════════════════════
 // INITIALISATION
 // ════════════════════════════════════════════════════════════════
@@ -441,6 +459,145 @@ void readNextionTouch() {
             bDOWN_pressed = false;
         } else {
             bSTOP_pressed = false;
+        }
+    }
+    // ─────────────────────────────────────────────────────────────
+    // CALIBRATION: Appui long sur tAzCur ou tElCur
+    // ─────────────────────────────────────────────────────────────
+    else if (componentID == NEXTION_ID_TAZCUR) {
+        if (isPressed) {
+            calibTouchStartAz = millis();
+            calibTouchingAz = true;
+            calibFeedbackSentAz = false;
+            #if DEBUG_NEXTION
+                Serial.println(F("[NEXTION] Touch tAzCur START"));
+            #endif
+        } else {
+            calibTouchingAz = false;
+            calibTouchStartAz = 0;
+            #if DEBUG_NEXTION
+                Serial.println(F("[NEXTION] Touch tAzCur RELEASE"));
+            #endif
+        }
+    }
+    else if (componentID == NEXTION_ID_TELCUR) {
+        if (isPressed) {
+            calibTouchStartEl = millis();
+            calibTouchingEl = true;
+            calibFeedbackSentEl = false;
+            #if DEBUG_NEXTION
+                Serial.println(F("[NEXTION] Touch tElCur START"));
+            #endif
+        } else {
+            calibTouchingEl = false;
+            calibTouchStartEl = 0;
+            #if DEBUG_NEXTION
+                Serial.println(F("[NEXTION] Touch tElCur RELEASE"));
+            #endif
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════
+// GESTION CALIBRATION PAR APPUI LONG (3 secondes sur tAzCur/tElCur)
+// ════════════════════════════════════════════════════════════════
+
+void handleCalibrationTouch() {
+    unsigned long now = millis();
+
+    // ─────────────────────────────────────────────────────────────
+    // CALIBRATION AZIMUTH (appui long sur tAzCur)
+    // ─────────────────────────────────────────────────────────────
+    if (calibTouchingAz && calibTouchStartAz > 0) {
+        unsigned long elapsed = now - calibTouchStartAz;
+
+        // Feedback visuel après 1 seconde d'appui (en cours...)
+        if (elapsed > 1000 && !calibFeedbackSentAz) {
+            calibFeedbackSentAz = true;
+            sendToNextion("tAzCur.pco=31");           // Bleu (calibration en cours)
+            sendToNextion("tAzCur.txt=\"CAL...\"");
+            #if DEBUG_NEXTION
+                Serial.println(F("[NEXTION] Calibration Az en cours..."));
+            #endif
+        }
+
+        // Calibration après 3 secondes d'appui
+        if (elapsed >= CALIBRATION_LONG_PRESS_MS) {
+            // Effectuer la calibration
+            calibrateAz(0.0);
+
+            // Feedback visuel
+            sendToNextion("tAzCur.pco=2016");         // Vert (succès)
+            sendToNextion("tAzCur.txt=\"0.0\\xB0\""); // Afficher 0.0°
+
+            // Message status temporaire
+            sendToNextion("tStatus.txt=\"AZ CAL OK\"");
+            sendToNextion("tStatus.pco=2016");        // Vert
+
+            #if DEBUG_SERIAL
+                Serial.println(F("════════════════════════════════════════════════════"));
+                Serial.println(F("    CALIBRATION AZIMUTH EFFECTUÉE (0.0°)"));
+                Serial.println(F("════════════════════════════════════════════════════"));
+            #endif
+
+            // Reset état calibration
+            calibTouchingAz = false;
+            calibTouchStartAz = 0;
+            calibFeedbackSentAz = false;
+
+            // Petite pause pour voir le feedback
+            delay(500);
+
+            // Restaurer couleur normale
+            sendToNextion("tAzCur.pco=65535");        // Blanc
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // CALIBRATION ÉLÉVATION (appui long sur tElCur)
+    // ─────────────────────────────────────────────────────────────
+    if (calibTouchingEl && calibTouchStartEl > 0) {
+        unsigned long elapsed = now - calibTouchStartEl;
+
+        // Feedback visuel après 1 seconde d'appui (en cours...)
+        if (elapsed > 1000 && !calibFeedbackSentEl) {
+            calibFeedbackSentEl = true;
+            sendToNextion("tElCur.pco=31");           // Bleu (calibration en cours)
+            sendToNextion("tElCur.txt=\"CAL...\"");
+            #if DEBUG_NEXTION
+                Serial.println(F("[NEXTION] Calibration El en cours..."));
+            #endif
+        }
+
+        // Calibration après 3 secondes d'appui
+        if (elapsed >= CALIBRATION_LONG_PRESS_MS) {
+            // Effectuer la calibration
+            calibrateEl(0.0);
+
+            // Feedback visuel
+            sendToNextion("tElCur.pco=2016");         // Vert (succès)
+            sendToNextion("tElCur.txt=\"0.0\\xB0\""); // Afficher 0.0°
+
+            // Message status temporaire
+            sendToNextion("tStatus.txt=\"EL CAL OK\"");
+            sendToNextion("tStatus.pco=2016");        // Vert
+
+            #if DEBUG_SERIAL
+                Serial.println(F("════════════════════════════════════════════════════"));
+                Serial.println(F("    CALIBRATION ÉLÉVATION EFFECTUÉE (0.0°)"));
+                Serial.println(F("════════════════════════════════════════════════════"));
+            #endif
+
+            // Reset état calibration
+            calibTouchingEl = false;
+            calibTouchStartEl = 0;
+            calibFeedbackSentEl = false;
+
+            // Petite pause pour voir le feedback
+            delay(500);
+
+            // Restaurer couleur normale
+            sendToNextion("tElCur.pco=65535");        // Blanc
         }
     }
 }

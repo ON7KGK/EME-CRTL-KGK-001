@@ -64,6 +64,10 @@ uint8_t nanoRxIndex = 0;
 unsigned long lastNanoUpdate = 0;
 const unsigned long NANO_UPDATE_INTERVAL = 20;  // 20ms entre mises à jour (réactif)
 
+// Statut communication Nano
+unsigned long lastNanoResponse = 0;  // Timestamp dernière réponse valide
+bool nanoConnected = false;          // État connexion actuel
+
 // ════════════════════════════════════════════════════════════════
 // INITIALISATION
 // ════════════════════════════════════════════════════════════════
@@ -71,11 +75,19 @@ const unsigned long NANO_UPDATE_INTERVAL = 20;  // 20ms entre mises à jour (ré
 void setupMotorNano() {
     NANO_SERIAL.begin(NANO_BAUD);
 
+    // Configuration pin statut communication
+    pinMode(NANO_STATUS_PIN, OUTPUT);
+    digitalWrite(NANO_STATUS_PIN, LOW);  // LOW au démarrage (pas encore connecté)
+    nanoConnected = false;
+    lastNanoResponse = 0;
+
     #if DEBUG_SERIAL
         Serial.println(F("=== MOTOR NANO INTERFACE ==="));
         Serial.print(F("UART: "));
         Serial.print(NANO_BAUD);
         Serial.println(F(" baud"));
+        Serial.print(F("Status pin: "));
+        Serial.println(NANO_STATUS_PIN);
     #endif
 
     // Attendre que le Nano soit prêt
@@ -96,6 +108,20 @@ void updateMotorNano() {
 
     // Lecture réponses du Nano (toujours)
     readNanoResponse();
+
+    // ─────────────────────────────────────────────────────────────────
+    // VÉRIFICATION TIMEOUT COMMUNICATION NANO
+    // ─────────────────────────────────────────────────────────────────
+    if (lastNanoResponse > 0 && (now - lastNanoResponse) > NANO_TIMEOUT_MS) {
+        // Timeout: plus de réponse depuis NANO_TIMEOUT_MS
+        if (nanoConnected) {
+            nanoConnected = false;
+            digitalWrite(NANO_STATUS_PIN, LOW);
+            #if DEBUG_SERIAL
+                Serial.println(F("[NANO] !!! COMMUNICATION PERDUE !!!"));
+            #endif
+        }
+    }
 
     // ─────────────────────────────────────────────────────────────────
     // MODE MANUEL: ne pas interférer avec les commandes manuelles
@@ -229,6 +255,19 @@ void readNanoResponse() {
                     Serial.print(F("[NANO] ← "));
                     Serial.println(nanoRxBuffer);
                 #endif
+
+                // ═══════════════════════════════════════════════════════
+                // MISE À JOUR STATUT COMMUNICATION
+                // ═══════════════════════════════════════════════════════
+                // Toute réponse valide = communication OK
+                lastNanoResponse = millis();
+                if (!nanoConnected) {
+                    nanoConnected = true;
+                    digitalWrite(NANO_STATUS_PIN, HIGH);
+                    #if DEBUG_SERIAL
+                        Serial.println(F("[NANO] Communication établie"));
+                    #endif
+                }
 
                 // Parser la réponse
                 // OK → Commande reçue par le Nano

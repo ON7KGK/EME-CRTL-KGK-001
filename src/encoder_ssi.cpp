@@ -38,15 +38,15 @@ unsigned long lastEncoderReadTime = 0;
 
 // Variables filtrage potentiomètre (moyenne glissante)
 #if (ENCODER_AZ_TYPE == ENCODER_POT_1T) || (ENCODER_AZ_TYPE == ENCODER_POT_MT)
-    int potAdcBufferAz[POT_SAMPLES] = {0};  // Buffer circulaire ADC azimuth
-    int potBufferIndexAz = 0;                // Index buffer circulaire azimuth
-    bool potBufferFullAz = false;            // Flag buffer plein azimuth
+    int potAdcBufferAz[POT_SAMPLES_AZ] = {0};  // Buffer circulaire ADC azimuth
+    int potBufferIndexAz = 0;                   // Index buffer circulaire azimuth
+    bool potBufferFullAz = false;               // Flag buffer plein azimuth
 #endif
 
 #if (ENCODER_EL_TYPE == ENCODER_POT_1T) || (ENCODER_EL_TYPE == ENCODER_POT_MT)
-    int potAdcBufferEl[POT_SAMPLES] = {0};  // Buffer circulaire ADC élévation
-    int potBufferIndexEl = 0;                // Index buffer circulaire élévation
-    bool potBufferFullEl = false;            // Flag buffer plein élévation
+    int potAdcBufferEl[POT_SAMPLES_EL] = {0};  // Buffer circulaire ADC élévation
+    int potBufferIndexEl = 0;                   // Index buffer circulaire élévation
+    bool potBufferFullEl = false;               // Flag buffer plein élévation
 #endif
 
 // Variables tracking tours potentiomètre multi-tours
@@ -100,7 +100,7 @@ void setupEncoders() {
         // Lire ADC initial et pré-remplir buffer filtrage
         int initialAdcAz = analogRead(POT_PIN_AZ);
 
-        for (int i = 0; i < POT_SAMPLES; i++) {
+        for (int i = 0; i < POT_SAMPLES_AZ; i++) {
             potAdcBufferAz[i] = initialAdcAz;
         }
         potBufferFullAz = true;
@@ -114,7 +114,7 @@ void setupEncoders() {
         // Lire ADC initial et pré-remplir buffer filtrage
         int initialAdcEl = analogRead(POT_PIN_EL);
 
-        for (int i = 0; i < POT_SAMPLES; i++) {
+        for (int i = 0; i < POT_SAMPLES_EL; i++) {
             potAdcBufferEl[i] = initialAdcEl;
         }
         potBufferFullEl = true;
@@ -208,15 +208,18 @@ void updateEncoders() {
 
         // Lecture ADC brute (0-1023)
         int rawAdc = analogRead(POT_PIN_AZ);
+        #if REVERSE_AZ
+            rawAdc = 1023 - rawAdc;  // Inversion sens
+        #endif
 
         // Ajout au buffer circulaire
         potAdcBufferAz[potBufferIndexAz] = rawAdc;
-        potBufferIndexAz = (potBufferIndexAz + 1) % POT_SAMPLES;
+        potBufferIndexAz = (potBufferIndexAz + 1) % POT_SAMPLES_AZ;
         if (potBufferIndexAz == 0) potBufferFullAz = true;
 
         // Calcul moyenne glissante
         long adcSum = 0;
-        int sampleCount = potBufferFullAz ? POT_SAMPLES : potBufferIndexAz;
+        int sampleCount = potBufferFullAz ? POT_SAMPLES_AZ : potBufferIndexAz;
         for (int i = 0; i < sampleCount; i++) {
             adcSum += potAdcBufferAz[i];
         }
@@ -239,44 +242,44 @@ void updateEncoders() {
 
         // Lecture ADC brute (0-1023)
         int rawAdc = analogRead(POT_PIN_AZ);
+        #if REVERSE_AZ
+            rawAdc = 1023 - rawAdc;  // Inversion sens
+        #endif
 
         // ─────────────────────────────────────────────────────────
         // DÉTECTION WRAPAROUND SUR ADC BRUT (AVANT FILTRAGE!)
         // ─────────────────────────────────────────────────────────
-        // IMPORTANT: Le filtrage moyenne glissante lisse la transition 1023→0
-        // et peut empêcher la détection. On détecte donc sur ADC brut.
-        //
-        // Seuil: si ADC saute de >768 à <256 ou vice-versa
-        // (équivalent à ~270° de saut, bien au-delà du mouvement normal)
+        // Logique ORIGINALE simple qui fonctionnait.
+        // Seuil 768: si ADC saute de plus de 3/4 de la plage en une lecture
 
-        static int previousRawAdc = rawAdc;  // Valeur brute précédente (non filtrée)
+        static int previousRawAdc = rawAdc;  // Valeur brute précédente
 
         int adcDelta = rawAdc - previousRawAdc;
 
-        // Passage 1023 → 0 (rotation CW)
-        if (adcDelta < -768) {  // Saut négatif brutal (ex: 1020 → 5)
+        // Passage 1023 → 0 (saut négatif brutal)
+        if (adcDelta < -768) {
             turnsAz++;
             EEPROM.put(EEPROM_TURNS_AZ, turnsAz);
             #if DEBUG_SERIAL
-                Serial.print(F("✓✓✓ WRAPAROUND +1 | ADC:"));
+                Serial.print(F("✓✓✓ WRAP++ Az | ADC:"));
                 Serial.print(previousRawAdc);
                 Serial.print(F("→"));
                 Serial.print(rawAdc);
-                Serial.print(F(" | turnsAz="));
+                Serial.print(F(" | turns="));
                 Serial.println(turnsAz);
             #endif
         }
 
-        // Passage 0 → 1023 (rotation CCW)
-        if (adcDelta > 768) {  // Saut positif brutal (ex: 5 → 1020)
+        // Passage 0 → 1023 (saut positif brutal)
+        if (adcDelta > 768) {
             turnsAz--;
             EEPROM.put(EEPROM_TURNS_AZ, turnsAz);
             #if DEBUG_SERIAL
-                Serial.print(F("✓✓✓ WRAPAROUND -1 | ADC:"));
+                Serial.print(F("✓✓✓ WRAP-- Az | ADC:"));
                 Serial.print(previousRawAdc);
                 Serial.print(F("→"));
                 Serial.print(rawAdc);
-                Serial.print(F(" | turnsAz="));
+                Serial.print(F(" | turns="));
                 Serial.println(turnsAz);
             #endif
         }
@@ -289,12 +292,12 @@ void updateEncoders() {
 
         // Ajout au buffer circulaire
         potAdcBufferAz[potBufferIndexAz] = rawAdc;
-        potBufferIndexAz = (potBufferIndexAz + 1) % POT_SAMPLES;
+        potBufferIndexAz = (potBufferIndexAz + 1) % POT_SAMPLES_AZ;
         if (potBufferIndexAz == 0) potBufferFullAz = true;
 
         // Calcul moyenne glissante
         long adcSum = 0;
-        int sampleCount = potBufferFullAz ? POT_SAMPLES : potBufferIndexAz;
+        int sampleCount = potBufferFullAz ? POT_SAMPLES_AZ : potBufferIndexAz;
         for (int i = 0; i < sampleCount; i++) {
             adcSum += potAdcBufferAz[i];
         }
@@ -310,17 +313,20 @@ void updateEncoders() {
         if (potDegrees > 360.0) potDegrees = 360.0;
 
         // ─────────────────────────────────────────────────────────
-        // CALCUL POSITION ABSOLUE (Tours multiples + Gear Ratio)
+        // CALCUL POSITION ABSOLUE (Tours multiples + Gear Ratio + Offset)
         // ─────────────────────────────────────────────────────────
         // Position totale pot (degrés) = (nombre de tours × 360°) + position dans tour courant
-        // Position antenne (degrés) = position pot / GEAR_RATIO_AZ
+        // Position antenne (degrés) = (position pot - offset) / GEAR_RATIO_AZ
         //
         // Exemple: Si GEAR_RATIO_AZ = 10.0 (10 tours pot = 1 tour antenne)
         //   - Pot à 3600° (10 tours) → Antenne à 360° (1 tour)
         //   - Normalisation 0-360° pour compatibilité Easycom/PstRotator
 
         float potPositionTotal = (turnsAz * 360.0) + potDegrees;
-        currentAz = potPositionTotal / GEAR_RATIO_AZ;
+
+        // Appliquer l'offset de calibration (converti de steps en degrés pot)
+        float offsetDegreesPot = ((float)offsetStepsAz / (float)POT_ADC_RESOLUTION) * 360.0;
+        currentAz = (potPositionTotal - offsetDegreesPot) / GEAR_RATIO_AZ;
 
         // Normalisation 0-360° (requise par PstRotator)
         while (currentAz >= 360.0) currentAz -= 360.0;
@@ -363,15 +369,18 @@ void updateEncoders() {
 
         // Lecture ADC brute (0-1023)
         int rawAdcEl = analogRead(POT_PIN_EL);
+        #if REVERSE_EL
+            rawAdcEl = 1023 - rawAdcEl;  // Inversion sens
+        #endif
 
         // Ajout au buffer circulaire
         potAdcBufferEl[potBufferIndexEl] = rawAdcEl;
-        potBufferIndexEl = (potBufferIndexEl + 1) % POT_SAMPLES;
+        potBufferIndexEl = (potBufferIndexEl + 1) % POT_SAMPLES_EL;
         if (potBufferIndexEl == 0) potBufferFullEl = true;
 
         // Calcul moyenne glissante
         long adcSumEl = 0;
-        int sampleCountEl = potBufferFullEl ? POT_SAMPLES : potBufferIndexEl;
+        int sampleCountEl = potBufferFullEl ? POT_SAMPLES_EL : potBufferIndexEl;
         for (int i = 0; i < sampleCountEl; i++) {
             adcSumEl += potAdcBufferEl[i];
         }
@@ -393,38 +402,44 @@ void updateEncoders() {
 
         // Lecture ADC brute (0-1023)
         int rawAdcEl = analogRead(POT_PIN_EL);
+        #if REVERSE_EL
+            rawAdcEl = 1023 - rawAdcEl;  // Inversion sens
+        #endif
 
         // ─────────────────────────────────────────────────────────
         // DÉTECTION WRAPAROUND SUR ADC BRUT (AVANT FILTRAGE!)
         // ─────────────────────────────────────────────────────────
-        static int previousRawAdcEl = rawAdcEl;  // Valeur brute précédente (non filtrée)
+        // Logique ORIGINALE simple qui fonctionnait.
+        // Seuil 768: si ADC saute de plus de 3/4 de la plage en une lecture
+
+        static int previousRawAdcEl = rawAdcEl;  // Valeur brute précédente
 
         int adcDeltaEl = rawAdcEl - previousRawAdcEl;
 
-        // Passage 1023 → 0 (rotation CW)
+        // Passage 1023 → 0 (saut négatif brutal)
         if (adcDeltaEl < -768) {
             turnsEl++;
             EEPROM.put(EEPROM_TURNS_EL, turnsEl);
             #if DEBUG_SERIAL
-                Serial.print(F("✓✓✓ EL WRAPAROUND +1 | ADC:"));
+                Serial.print(F("✓✓✓ WRAP++ El | ADC:"));
                 Serial.print(previousRawAdcEl);
                 Serial.print(F("→"));
                 Serial.print(rawAdcEl);
-                Serial.print(F(" | turnsEl="));
+                Serial.print(F(" | turns="));
                 Serial.println(turnsEl);
             #endif
         }
 
-        // Passage 0 → 1023 (rotation CCW)
+        // Passage 0 → 1023 (saut positif brutal)
         if (adcDeltaEl > 768) {
             turnsEl--;
             EEPROM.put(EEPROM_TURNS_EL, turnsEl);
             #if DEBUG_SERIAL
-                Serial.print(F("✓✓✓ EL WRAPAROUND -1 | ADC:"));
+                Serial.print(F("✓✓✓ WRAP-- El | ADC:"));
                 Serial.print(previousRawAdcEl);
                 Serial.print(F("→"));
                 Serial.print(rawAdcEl);
-                Serial.print(F(" | turnsEl="));
+                Serial.print(F(" | turns="));
                 Serial.println(turnsEl);
             #endif
         }
@@ -437,12 +452,12 @@ void updateEncoders() {
 
         // Ajout au buffer circulaire
         potAdcBufferEl[potBufferIndexEl] = rawAdcEl;
-        potBufferIndexEl = (potBufferIndexEl + 1) % POT_SAMPLES;
+        potBufferIndexEl = (potBufferIndexEl + 1) % POT_SAMPLES_EL;
         if (potBufferIndexEl == 0) potBufferFullEl = true;
 
         // Calcul moyenne glissante
         long adcSumEl = 0;
-        int sampleCountEl = potBufferFullEl ? POT_SAMPLES : potBufferIndexEl;
+        int sampleCountEl = potBufferFullEl ? POT_SAMPLES_EL : potBufferIndexEl;
         for (int i = 0; i < sampleCountEl; i++) {
             adcSumEl += potAdcBufferEl[i];
         }
@@ -458,17 +473,20 @@ void updateEncoders() {
         if (potDegreesEl > 360.0) potDegreesEl = 360.0;
 
         // ─────────────────────────────────────────────────────────
-        // CALCUL POSITION ABSOLUE (Tours multiples + Gear Ratio)
+        // CALCUL POSITION ABSOLUE (Tours multiples + Gear Ratio + Offset)
         // ─────────────────────────────────────────────────────────
         // Position totale pot (degrés) = (nombre de tours × 360°) + position dans tour courant
-        // Position antenne (degrés) = position pot / GEAR_RATIO_EL
+        // Position antenne (degrés) = (position pot - offset) / GEAR_RATIO_EL
         //
         // Exemple: Si GEAR_RATIO_EL = 4.0 (4 tours pot = 1 tour élévation 0-90°)
         //   - Pot à 360° (1 tour) → Élévation à 90° (1/4 tour)
         //   - Normalisation 0-90° pour compatibilité Easycom/PstRotator
 
         float potPositionTotalEl = (turnsEl * 360.0) + potDegreesEl;
-        currentEl = potPositionTotalEl / GEAR_RATIO_EL;
+
+        // Appliquer l'offset de calibration (converti de steps en degrés pot)
+        float offsetDegreesPotEl = ((float)offsetStepsEl / (float)POT_ADC_RESOLUTION) * 360.0;
+        currentEl = (potPositionTotalEl - offsetDegreesPotEl) / GEAR_RATIO_EL;
 
         // Normalisation 0-90° (typique pour élévation)
         while (currentEl >= 90.0) currentEl -= 90.0;
@@ -632,27 +650,70 @@ void calibrateAz(float realDegrees) {
     // Calibration azimuth: définit position courante = angle réel donné
     // Ex: Pointer vers Nord (0°) et envoyer commande "Z0.0"
 
-    // Calcul offset pour que currentAz = realDegrees
-    // Formule inversée de convertCountsToDegrees:
-    // stepsAbsolus actuels = (turnsAz * 4096) + rawCountsAz
-    // stepsAbsolus souhaités = realDegrees × 4096 × gearRatio / 360
-    // offset = stepsAbsolus actuels - stepsAbsolus souhaités
+    #if (ENCODER_AZ_TYPE == ENCODER_POT_MT)
+        // ─────────────────────────────────────────────────────────
+        // CALIBRATION POTENTIOMÈTRE MULTI-TOURS
+        // ─────────────────────────────────────────────────────────
+        // Pour calibrer à realDegrees:
+        // 1. Reset turnsAz à 0
+        // 2. Calculer la position actuelle du pot en degrés antenne
+        // 3. Stocker l'offset pour que currentAz = realDegrees
 
-    offsetStepsAz = (turnsAz * SSI_COUNTS_PER_REV) + rawCountsAz
-                    - (long)(realDegrees * SSI_COUNTS_PER_REV * GEAR_RATIO_AZ / 360.0);
+        // Position actuelle du pot (degrés dans le tour courant)
+        float potDegrees = ((float)rawCountsAz / (float)POT_ADC_RESOLUTION) * 360.0;
 
-    // Sauvegarde EEPROM
-    EEPROM.put(EEPROM_OFFSET_AZ, offsetStepsAz);
+        // Reset compteur de tours
+        turnsAz = 0;
+        EEPROM.put(EEPROM_TURNS_AZ, turnsAz);
 
-    // Mise à jour position courante immédiatement
-    currentAz = realDegrees;
+        // Position pot sans offset = potDegrees / GEAR_RATIO_AZ
+        // On veut que cette position = realDegrees
+        // Donc offset (en degrés antenne) = (potDegrees / GEAR_RATIO_AZ) - realDegrees
+        // On stocke l'offset en "steps" pot (pour compatibilité)
+        float offsetDegrees = (potDegrees / GEAR_RATIO_AZ) - realDegrees;
+        offsetStepsAz = (long)(offsetDegrees * GEAR_RATIO_AZ * POT_ADC_RESOLUTION / 360.0);
 
-    #if DEBUG_SERIAL
-        Serial.print(F("✓ Calibration Az: position courante = "));
-        Serial.print(realDegrees, 1);
-        Serial.print(F("° (offset="));
-        Serial.print(offsetStepsAz);
-        Serial.println(F(")"));
+        EEPROM.put(EEPROM_OFFSET_AZ, offsetStepsAz);
+
+        // Mise à jour position courante immédiatement
+        currentAz = realDegrees;
+
+        #if DEBUG_SERIAL
+            Serial.print(F("✓ Calibration Az POT_MT: "));
+            Serial.print(realDegrees, 1);
+            Serial.print(F("° (potDeg="));
+            Serial.print(potDegrees, 1);
+            Serial.print(F(", offset="));
+            Serial.print(offsetStepsAz);
+            Serial.println(F(")"));
+        #endif
+
+    #else
+        // ─────────────────────────────────────────────────────────
+        // CALIBRATION ENCODEUR SSI
+        // ─────────────────────────────────────────────────────────
+        // Calcul offset pour que currentAz = realDegrees
+        // Formule inversée de convertCountsToDegrees:
+        // stepsAbsolus actuels = (turnsAz * 4096) + rawCountsAz
+        // stepsAbsolus souhaités = realDegrees × 4096 × gearRatio / 360
+        // offset = stepsAbsolus actuels - stepsAbsolus souhaités
+
+        offsetStepsAz = (turnsAz * SSI_COUNTS_PER_REV) + rawCountsAz
+                        - (long)(realDegrees * SSI_COUNTS_PER_REV * GEAR_RATIO_AZ / 360.0);
+
+        // Sauvegarde EEPROM
+        EEPROM.put(EEPROM_OFFSET_AZ, offsetStepsAz);
+
+        // Mise à jour position courante immédiatement
+        currentAz = realDegrees;
+
+        #if DEBUG_SERIAL
+            Serial.print(F("✓ Calibration Az SSI: "));
+            Serial.print(realDegrees, 1);
+            Serial.print(F("° (offset="));
+            Serial.print(offsetStepsAz);
+            Serial.println(F(")"));
+        #endif
     #endif
 }
 
@@ -664,21 +725,57 @@ void calibrateEl(float realDegrees) {
     // Calibration élévation: définit position courante = angle réel donné
     // Ex: Pointer à l'horizon (0°) ou au zénith (90°) et calibrer
 
-    offsetStepsEl = (turnsEl * SSI_COUNTS_PER_REV) + rawCountsEl
-                    - (long)(realDegrees * SSI_COUNTS_PER_REV * GEAR_RATIO_EL / 360.0);
+    #if (ENCODER_EL_TYPE == ENCODER_POT_MT)
+        // ─────────────────────────────────────────────────────────
+        // CALIBRATION POTENTIOMÈTRE MULTI-TOURS
+        // ─────────────────────────────────────────────────────────
 
-    // Sauvegarde EEPROM
-    EEPROM.put(EEPROM_OFFSET_EL, offsetStepsEl);
+        // Position actuelle du pot (degrés dans le tour courant)
+        float potDegrees = ((float)rawCountsEl / (float)POT_ADC_RESOLUTION) * 360.0;
 
-    // Mise à jour position courante immédiatement
-    currentEl = realDegrees;
+        // Reset compteur de tours
+        turnsEl = 0;
+        EEPROM.put(EEPROM_TURNS_EL, turnsEl);
 
-    #if DEBUG_SERIAL
-        Serial.print(F("✓ Calibration El: position courante = "));
-        Serial.print(realDegrees, 1);
-        Serial.print(F("° (offset="));
-        Serial.print(offsetStepsEl);
-        Serial.println(F(")"));
+        // Calcul offset
+        float offsetDegrees = (potDegrees / GEAR_RATIO_EL) - realDegrees;
+        offsetStepsEl = (long)(offsetDegrees * GEAR_RATIO_EL * POT_ADC_RESOLUTION / 360.0);
+
+        EEPROM.put(EEPROM_OFFSET_EL, offsetStepsEl);
+
+        // Mise à jour position courante immédiatement
+        currentEl = realDegrees;
+
+        #if DEBUG_SERIAL
+            Serial.print(F("✓ Calibration El POT_MT: "));
+            Serial.print(realDegrees, 1);
+            Serial.print(F("° (potDeg="));
+            Serial.print(potDegrees, 1);
+            Serial.print(F(", offset="));
+            Serial.print(offsetStepsEl);
+            Serial.println(F(")"));
+        #endif
+
+    #else
+        // ─────────────────────────────────────────────────────────
+        // CALIBRATION ENCODEUR SSI
+        // ─────────────────────────────────────────────────────────
+        offsetStepsEl = (turnsEl * SSI_COUNTS_PER_REV) + rawCountsEl
+                        - (long)(realDegrees * SSI_COUNTS_PER_REV * GEAR_RATIO_EL / 360.0);
+
+        // Sauvegarde EEPROM
+        EEPROM.put(EEPROM_OFFSET_EL, offsetStepsEl);
+
+        // Mise à jour position courante immédiatement
+        currentEl = realDegrees;
+
+        #if DEBUG_SERIAL
+            Serial.print(F("✓ Calibration El SSI: "));
+            Serial.print(realDegrees, 1);
+            Serial.print(F("° (offset="));
+            Serial.print(offsetStepsEl);
+            Serial.println(F(")"));
+        #endif
     #endif
 }
 

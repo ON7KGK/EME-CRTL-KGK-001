@@ -278,6 +278,9 @@ void loop() {
         // Lecture événements tactiles (boutons CW, CCW, UP, DOWN, STOP)
         readNextionTouch();
 
+        // Gestion calibration par appui long (3 sec sur tAzCur/tElCur)
+        handleCalibrationTouch();
+
         // Gestion boutons → envoi commandes Easycom incrémentales
         handleNextionButtons();
 

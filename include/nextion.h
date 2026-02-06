@@ -124,4 +124,25 @@ void handleNextionButtons();
  */
 void updateNextionIndicators();
 
+/**
+ * Gestion calibration par appui long Nextion
+ * - Détecte appui long (3 secondes) sur tAzCur ou tElCur
+ * - Calibre l'axe correspondant à 0.0°
+ * - Affiche feedback visuel pendant et après calibration
+ *
+ * Appelé dans loop() après readNextionTouch()
+ *
+ * Fonctionnement:
+ *   1. Appui sur tAzCur/tElCur → démarrage timer
+ *   2. Après 1 sec → affichage "CAL..." en bleu
+ *   3. Après 3 sec → calibration effectuée, affichage "0.0°" en vert
+ *   4. Relâchement avant 3 sec → annulation
+ *
+ * Configuration Nextion Editor:
+ *   - tAzCur: Activer "Send Component ID" pour Press et Release
+ *   - tElCur: Activer "Send Component ID" pour Press et Release
+ *   - Vérifier que les IDs correspondent (NEXTION_ID_TAZCUR/TELCUR)
+ */
+void handleCalibrationTouch();
+
 #endif // NEXTION_H
