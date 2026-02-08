@@ -36,8 +36,12 @@
 // VARIABLES GLOBALES
 // ════════════════════════════════════════════════════════════════
 
-float targetAz = -1.0;
-float targetEl = -1.0;
+// Valeur sentinel pour "pas de cible active"
+// IMPORTANT: -999.0 au lieu de -1.0 pour permettre les cibles négatives (ex: El = -5°)
+#define NO_TARGET -999.0
+
+float targetAz = NO_TARGET;
+float targetEl = NO_TARGET;
 
 bool movingAz = false;
 bool movingEl = false;
@@ -63,6 +67,8 @@ uint8_t nanoRxIndex = 0;
 // Timing
 unsigned long lastNanoUpdate = 0;
 const unsigned long NANO_UPDATE_INTERVAL = 20;  // 20ms entre mises à jour (réactif)
+unsigned long lastNanoKeepalive = 0;
+const unsigned long NANO_KEEPALIVE_INTERVAL = 500;  // 500ms entre keepalives (2/sec)
 
 // Statut communication Nano
 unsigned long lastNanoResponse = 0;  // Timestamp dernière réponse valide
@@ -142,26 +148,28 @@ void updateMotorNano() {
         int8_t newDirAz = 0;
         float errAz = 0;
 
-        if (targetAz >= 0) {
-            // Calcul erreur avec gestion wrap-around 360°
+        if (targetAz > NO_TARGET) {
+            // Calcul erreur SANS wrap-around (rotor avec butées mécaniques 0-343°)
             errAz = targetAz - currentAz;
-            if (errAz > 180) errAz -= 360;
-            if (errAz < -180) errAz += 360;
 
-            if (abs(errAz) > POSITION_TOLERANCE) {
+            // Hystérésis: seuil différent selon état moteur
+            //   En mouvement → s'arrête à POSITION_TOLERANCE (0.15°)
+            //   À l'arrêt   → redémarre à POSITION_RESTART (0.50°)
+            float threshold = movingAz ? POSITION_TOLERANCE : POSITION_RESTART;
+
+            if (abs(errAz) > threshold) {
                 newDirAz = (errAz > 0) ? 1 : -1;
                 movingAz = true;
-            } else {
-                // Cible atteinte
+            } else if (abs(errAz) <= POSITION_TOLERANCE) {
                 #if DEBUG_MOTOR_CMD
-                    if (currentDirAz != 0) {
+                    if (movingAz) {
                         Serial.print(F("[NANO] Az ATTEINT: "));
                         Serial.println(currentAz, 1);
                     }
                 #endif
-                targetAz = -1.0;
                 movingAz = false;
             }
+            // Entre TOLERANCE et RESTART: ne change pas d'état (zone morte)
         } else {
             movingAz = false;
         }
@@ -172,21 +180,21 @@ void updateMotorNano() {
         int8_t newDirEl = 0;
         float errEl = 0;
 
-        if (targetEl >= 0) {
+        if (targetEl > NO_TARGET) {
             errEl = targetEl - currentEl;
 
-            if (abs(errEl) > POSITION_TOLERANCE) {
+            float threshold = movingEl ? POSITION_TOLERANCE : POSITION_RESTART;
+
+            if (abs(errEl) > threshold) {
                 newDirEl = (errEl > 0) ? 1 : -1;
                 movingEl = true;
-            } else {
-                // Cible atteinte
+            } else if (abs(errEl) <= POSITION_TOLERANCE) {
                 #if DEBUG_MOTOR_CMD
-                    if (currentDirEl != 0) {
+                    if (movingEl) {
                         Serial.print(F("[NANO] El ATTEINT: "));
                         Serial.println(currentEl, 1);
                     }
                 #endif
-                targetEl = -1.0;
                 movingEl = false;
             }
         } else {
@@ -201,10 +209,17 @@ void updateMotorNano() {
         uint8_t newSpeedMode = (maxErr > SPEED_SWITCH_THRESHOLD) ? 1 : 0;
 
         // ─────────────────────────────────────────────────────────────
-        // ENVOI COMMANDE COMBINÉE SI CHANGEMENT (dir ou vitesse)
+        // ENVOI COMMANDE AU NANO
         // ─────────────────────────────────────────────────────────────
-        // Une seule commande pour les deux axes = tracking simultané!
-        if (newDirAz != currentDirAz || newDirEl != currentDirEl || newSpeedMode != currentSpeedMode) {
+        // Envoie IMMÉDIATEMENT sur changement de direction/vitesse
+        // Envoie un keepalive toutes les 500ms quand moteurs actifs
+        // (évite d'inonder le Nano à 50 cmd/sec)
+        bool motorsActive = (newDirAz != 0 || newDirEl != 0);
+        bool stateChanged = (newDirAz != currentDirAz || newDirEl != currentDirEl || newSpeedMode != currentSpeedMode);
+        bool keepalive = motorsActive && (now - lastNanoKeepalive >= NANO_KEEPALIVE_INTERVAL);
+
+        if (stateChanged || keepalive) {
+            lastNanoKeepalive = now;
             // Format: M:dirAz:dirEl:speed
             NANO_SERIAL.print(F("M:"));
             NANO_SERIAL.print(newDirAz);
@@ -214,22 +229,24 @@ void updateMotorNano() {
             NANO_SERIAL.println(newSpeedMode);
 
             #if DEBUG_MOTOR_CMD
-                Serial.print(F("[NANO] → M:"));
-                Serial.print(newDirAz);
-                Serial.print(F(":"));
-                Serial.print(newDirEl);
-                Serial.print(F(":"));
-                Serial.print(newSpeedMode);
-                Serial.print(F(" (Az="));
-                if (newDirAz > 0) Serial.print(F("CW"));
-                else if (newDirAz < 0) Serial.print(F("CCW"));
-                else Serial.print(F("STOP"));
-                Serial.print(F(", El="));
-                if (newDirEl > 0) Serial.print(F("UP"));
-                else if (newDirEl < 0) Serial.print(F("DOWN"));
-                else Serial.print(F("STOP"));
-                Serial.print(newSpeedMode ? F(", FAST)") : F(", SLOW)"));
-                Serial.println();
+                if (stateChanged) {
+                    Serial.print(F("[NANO] → M:"));
+                    Serial.print(newDirAz);
+                    Serial.print(F(":"));
+                    Serial.print(newDirEl);
+                    Serial.print(F(":"));
+                    Serial.print(newSpeedMode);
+                    Serial.print(F(" (Az="));
+                    if (newDirAz > 0) Serial.print(F("CW"));
+                    else if (newDirAz < 0) Serial.print(F("CCW"));
+                    else Serial.print(F("STOP"));
+                    Serial.print(F(", El="));
+                    if (newDirEl > 0) Serial.print(F("UP"));
+                    else if (newDirEl < 0) Serial.print(F("DOWN"));
+                    else Serial.print(F("STOP"));
+                    Serial.print(newSpeedMode ? F(", FAST)") : F(", SLOW)"));
+                    Serial.println();
+                }
             #endif
 
             currentDirAz = newDirAz;
@@ -288,7 +305,7 @@ void readNanoResponse() {
                     nanoLimitCW = true;
                     movingAz = false;
                     currentDirAz = 0;
-                    targetAz = -1.0;
+                    targetAz = NO_TARGET;
                     #if DEBUG_SERIAL
                         Serial.println(F("[NANO] !!! LIMIT CW !!!"));
                     #endif
@@ -298,7 +315,7 @@ void readNanoResponse() {
                     nanoLimitCCW = true;
                     movingAz = false;
                     currentDirAz = 0;
-                    targetAz = -1.0;
+                    targetAz = NO_TARGET;
                     #if DEBUG_SERIAL
                         Serial.println(F("[NANO] !!! LIMIT CCW !!!"));
                     #endif
@@ -308,7 +325,7 @@ void readNanoResponse() {
                     nanoLimitUp = true;
                     movingEl = false;
                     currentDirEl = 0;
-                    targetEl = -1.0;
+                    targetEl = NO_TARGET;
                     #if DEBUG_SERIAL
                         Serial.println(F("[NANO] !!! LIMIT UP !!!"));
                     #endif
@@ -318,7 +335,7 @@ void readNanoResponse() {
                     nanoLimitDown = true;
                     movingEl = false;
                     currentDirEl = 0;
-                    targetEl = -1.0;
+                    targetEl = NO_TARGET;
                     #if DEBUG_SERIAL
                         Serial.println(F("[NANO] !!! LIMIT DOWN !!!"));
                     #endif
@@ -369,8 +386,8 @@ void stopAllMotorsNano() {
     NANO_SERIAL.println(F("M:0:0:0"));
 
     // Reset état local
-    targetAz = -1.0;
-    targetEl = -1.0;
+    targetAz = NO_TARGET;
+    targetEl = NO_TARGET;
     movingAz = false;
     movingEl = false;
     currentDirAz = 0;
@@ -388,8 +405,8 @@ void stopAllMotorsNano() {
 
 void sendManualMove(int8_t dirAz, int8_t dirEl) {
     // Annuler les cibles automatiques (mode manuel prioritaire)
-    targetAz = -1.0;
-    targetEl = -1.0;
+    targetAz = NO_TARGET;
+    targetEl = NO_TARGET;
 
     // Si STOP (0,0), repasser en mode automatique
     if (dirAz == 0 && dirEl == 0) {
@@ -407,12 +424,13 @@ void sendManualMove(int8_t dirAz, int8_t dirEl) {
         return;
     }
 
-    // Envoyer commande avec speed=2 (vitesse manuelle 100 steps/s)
+    // Envoyer commande avec speed=1 (vitesse RAPIDE pour tests)
+    // Note: speed=2 était lent (100 steps/s), speed=1 = vitesse auto rapide
     NANO_SERIAL.print(F("M:"));
     NANO_SERIAL.print(dirAz);
     NANO_SERIAL.print(F(":"));
     NANO_SERIAL.print(dirEl);
-    NANO_SERIAL.println(F(":2"));
+    NANO_SERIAL.println(F(":1"));
 
     // Mettre à jour état local
     currentDirAz = dirAz;
@@ -426,7 +444,7 @@ void sendManualMove(int8_t dirAz, int8_t dirEl) {
         Serial.print(dirAz);
         Serial.print(F(":"));
         Serial.print(dirEl);
-        Serial.println(F(":2 (MANUAL)"));
+        Serial.println(F(":1 (MANUAL FAST)"));
     #endif
 }
 
@@ -437,7 +455,7 @@ void sendManualMove(int8_t dirAz, int8_t dirEl) {
 void printMotorNanoDebug() {
     // Azimuth
     Serial.print(F("[NANO] Az: "));
-    if (targetAz >= 0) {
+    if (targetAz > NO_TARGET) {
         Serial.print(targetAz, 1);
     } else {
         Serial.print(F("---"));
@@ -459,7 +477,7 @@ void printMotorNanoDebug() {
 
     // Élévation
     Serial.print(F(" | El: "));
-    if (targetEl >= 0) {
+    if (targetEl > NO_TARGET) {
         Serial.print(targetEl, 1);
     } else {
         Serial.print(F("---"));

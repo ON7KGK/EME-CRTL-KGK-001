@@ -24,14 +24,28 @@
 
 extern float currentAz;  // Position actuelle azimuth
 extern float currentEl;  // Position actuelle élévation
-extern float targetAz;   // Position cible azimuth (-1 si aucune)
-extern float targetEl;   // Position cible élévation (-1 si aucune)
+extern float targetAz;   // Position cible azimuth (NO_TARGET si aucune)
+extern float targetEl;   // Position cible élévation (NO_TARGET si aucune)
+
+// Valeur sentinel pour "pas de cible active"
+// IMPORTANT: -999.0 au lieu de -1.0 pour permettre les cibles négatives (ex: El = -5°)
+#define NO_TARGET -999.0
 
 // ════════════════════════════════════════════════════════════════
 // VARIABLES INTERNES
 // ════════════════════════════════════════════════════════════════
 
 unsigned long lastNextionUpdate = 0;  // Dernière mise à jour affichage
+
+// ─────────────────────────────────────────────────────────────────
+// PERSISTANCE AFFICHAGE CIBLES (pour mode tracking PstRotator)
+// ─────────────────────────────────────────────────────────────────
+#define TARGET_DISPLAY_PERSIST_MS  3600000UL  // Durée affichage après atteinte cible (1 heure)
+
+float lastDisplayedTargetAz = NO_TARGET;   // Dernière cible Az affichée
+float lastDisplayedTargetEl = NO_TARGET;   // Dernière cible El affichée
+unsigned long lastTargetAzTime = 0;        // Timestamp dernière cible Az reçue
+unsigned long lastTargetElTime = 0;        // Timestamp dernière cible El reçue
 
 // ─────────────────────────────────────────────────────────────────
 // ÉTATS BOUTONS TACTILES (mis à jour par readNextionTouch)
@@ -156,15 +170,28 @@ void updateNextion() {
     sendToNextion(cmd);
 
     // ─────────────────────────────────────────────────────────────
-    // AZIMUTH - Position cible (si active)
+    // AZIMUTH - Position cible (avec persistance pour tracking)
     // ─────────────────────────────────────────────────────────────
-    if (targetAz >= 0.0) {  // -1.0 = pas de cible active
+    if (targetAz > NO_TARGET) {
+        // Nouvelle cible active - mémoriser et afficher
+        lastDisplayedTargetAz = targetAz;
+        lastTargetAzTime = currentTime;
         cmd = "tAzTgt.txt=\"";
         cmd += String(targetAz, 1);
         cmd += "°\"";
         sendToNextion(cmd);
+    } else if (lastDisplayedTargetAz > NO_TARGET &&
+               (currentTime - lastTargetAzTime) < TARGET_DISPLAY_PERSIST_MS) {
+        // Pas de cible active mais on garde l'affichage pendant 5s
+        cmd = "tAzTgt.txt=\"(";
+        cmd += String(lastDisplayedTargetAz, 1);
+        cmd += ")\"";  // Parenthèses pour indiquer "atteint"
+        sendToNextion(cmd);
     } else {
-        // Aucune cible - afficher "---"
+        // Timeout - effacer affichage
+        if (lastDisplayedTargetAz > NO_TARGET) {
+            lastDisplayedTargetAz = NO_TARGET;
+        }
         sendToNextion("tAzTgt.txt=\"---\"");
     }
 
@@ -177,14 +204,28 @@ void updateNextion() {
     sendToNextion(cmd);
 
     // ─────────────────────────────────────────────────────────────
-    // ÉLÉVATION - Position cible (si active)
+    // ÉLÉVATION - Position cible (avec persistance pour tracking)
     // ─────────────────────────────────────────────────────────────
-    if (targetEl >= 0.0) {
+    if (targetEl > NO_TARGET) {
+        // Nouvelle cible active - mémoriser et afficher
+        lastDisplayedTargetEl = targetEl;
+        lastTargetElTime = currentTime;
         cmd = "tElTgt.txt=\"";
         cmd += String(targetEl, 1);
         cmd += "°\"";
         sendToNextion(cmd);
+    } else if (lastDisplayedTargetEl > NO_TARGET &&
+               (currentTime - lastTargetElTime) < TARGET_DISPLAY_PERSIST_MS) {
+        // Pas de cible active mais on garde l'affichage pendant 5s
+        cmd = "tElTgt.txt=\"(";
+        cmd += String(lastDisplayedTargetEl, 1);
+        cmd += ")\"";  // Parenthèses pour indiquer "atteint"
+        sendToNextion(cmd);
     } else {
+        // Timeout - effacer affichage
+        if (lastDisplayedTargetEl > NO_TARGET) {
+            lastDisplayedTargetEl = NO_TARGET;
+        }
         sendToNextion("tElTgt.txt=\"---\"");
     }
 
@@ -276,13 +317,27 @@ void updateNextion() {
         Serial.print(F("[NEXTION] Az:"));
         Serial.print(currentAz, 1);
         Serial.print(F("° → "));
-        if (targetAz >= 0) Serial.print(targetAz, 1);
-        else Serial.print(F("---"));
+        if (targetAz > NO_TARGET) {
+            Serial.print(targetAz, 1);
+        } else if (lastDisplayedTargetAz > NO_TARGET) {
+            Serial.print(F("("));
+            Serial.print(lastDisplayedTargetAz, 1);
+            Serial.print(F(")"));
+        } else {
+            Serial.print(F("---"));
+        }
         Serial.print(F("° | El:"));
         Serial.print(currentEl, 1);
         Serial.print(F("° → "));
-        if (targetEl >= 0) Serial.println(targetEl, 1);
-        else Serial.println(F("---"));
+        if (targetEl > NO_TARGET) {
+            Serial.println(targetEl, 1);
+        } else if (lastDisplayedTargetEl > NO_TARGET) {
+            Serial.print(F("("));
+            Serial.print(lastDisplayedTargetEl, 1);
+            Serial.println(F(")"));
+        } else {
+            Serial.println(F("---"));
+        }
     #endif
 }
 
@@ -694,8 +749,9 @@ void handleNextionButtons() {
                 parseEasycomCommand("AZ" + String(newTarget, 1));
             } else if (dirEl != 0) {
                 float newTarget = currentEl + (dirEl * MANUAL_INCREMENT_EL);
-                if (newTarget > 90.0) newTarget = 90.0;
-                if (newTarget < 0.0) newTarget = 0.0;
+                // Limites élévation: -15° (parabole offset) à +95°
+                if (newTarget > 95.0) newTarget = 95.0;
+                if (newTarget < -15.0) newTarget = -15.0;
                 parseEasycomCommand("EL" + String(newTarget, 1));
             }
         #endif
@@ -777,7 +833,7 @@ void updateNextionIndicators() {
     #else
         // Mode sans Nano - afficher STOP ou AUTO basé sur les cibles
         static bool lastWasMoving = false;
-        bool isMoving = (targetAz >= 0 || targetEl >= 0);
+        bool isMoving = (targetAz > NO_TARGET || targetEl > NO_TARGET);
 
         if (isMoving != lastWasMoving) {
             lastWasMoving = isMoving;

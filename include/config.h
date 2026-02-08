@@ -25,8 +25,8 @@
 #define ENCODER_POT_MT        5  // Potentiomètre multi-tours (tracking tours comme SSI_INC)
 
 // Configuration des types d'encodeurs utilisés
-#define ENCODER_AZ_TYPE  ENCODER_POT_MT        // Azimuth: potentiomètre multi-tours
-#define ENCODER_EL_TYPE  ENCODER_POT_MT  // Élévation: encodeur absolu
+#define ENCODER_AZ_TYPE  ENCODER_POT_MT   // Azimuth: potentiomètre multi-tours (~5 tours)
+#define ENCODER_EL_TYPE  ENCODER_POT_MT   // Élévation: potentiomètre multi-tours (~2 tours)
 
 // ════════════════════════════════════════════════════════════════
 // DÉFINITIONS DES TYPES DE MOTEURS
@@ -177,8 +177,8 @@
 //   - Exemple: 10 tours pot = 1 tour antenne → GEAR_RATIO_AZ = 10.0
 //   - Résolution finale = 0.35°/count × 10 = 0.035°/count
 //
-#define GEAR_RATIO_AZ        10   // Tours capteur pour 1 tour antenne Az
-#define GEAR_RATIO_EL        10    // Tours capteur pour 1 tour antenne El
+#define GEAR_RATIO_AZ        4.4    // Tours capteur pour 1 tour antenne Az (calculé: 90° réel = ADC 1128)
+#define GEAR_RATIO_EL        5   // Tours capteur pour 1 tour antenne El (120/24 dents)
 
 // ─────────────────────────────────────────────────────────────────
 // CARACTÉRISTIQUES MOTEURS PAS-À-PAS
@@ -221,10 +221,9 @@
 // ════════════════════════════════════════════════════════════════
 
 // Seuils de précision (degrés)
-#define POSITION_TOLERANCE     1   // Tolérance position atteinte (0.08°)
-#define SPEED_SWITCH_THRESHOLD 3.0    // Erreur pour switch vitesse rapide→lente (3.0°)
-#define MICRO_MOVEMENT_FILTER  0.20   // Filtre anti-vibration PstRotator (0.15°)
-                                       // Commandes < 0.15° sont ignorées
+#define POSITION_TOLERANCE     0.15  // Tolérance arrêt moteur (0.15°)
+#define POSITION_RESTART       0.50  // Hystérésis redémarrage (0.50°) - évite micro-pas
+#define SPEED_SWITCH_THRESHOLD 3.0   // Erreur pour switch vitesse rapide→lente (3.0°)
 
 // ════════════════════════════════════════════════════════════════
 // MOUVEMENT MANUEL (Boutons locaux)
@@ -287,9 +286,43 @@
 #define EEPROM_OFFSET_AZ   8   // Offset calibration azimuth (long, 4 bytes)
 #define EEPROM_OFFSET_EL   16  // Offset calibration élévation (long, 4 bytes)
 
+// ════════════════════════════════════════════════════════════════
+// TABLE DE CORRECTION AZIMUTH (Compensation non-linéarité pot)
+// ════════════════════════════════════════════════════════════════
+// 35 points de calibration (0° à 340° par pas de 10°)
+// Chaque point stocke la valeur ADC cumulée correspondant à l'angle réel
+// Interpolation linéaire entre les points pour angles intermédiaires
+//
+// Procédure calibration:
+// 1. Pointer antenne vers position connue (boussole/app)
+// 2. Envoyer commande "C10" pour calibrer point 10°
+// 3. Répéter pour chaque point (C0, C10, C20, ... C340)
+// 4. Commande "CTABLE" pour afficher la table complète
+//
+// Note: Remplace le GEAR_RATIO_AZ pour une précision maximale
+
+#define AZ_TABLE_POINTS      35    // Nombre de points (0,10,20...340)
+#define AZ_TABLE_STEP        10    // Intervalle en degrés entre points
+#define EEPROM_AZ_TABLE      100   // Adresse début table (35 × 4 bytes = 140 bytes)
+                                   // Occupe adresses 100-239
+
+// ════════════════════════════════════════════════════════════════
+// TABLE DE CORRECTION ÉLÉVATION (Compensation non-linéarité pot)
+// ════════════════════════════════════════════════════════════════
+// 10 points de calibration (0° à 90° par pas de 10°)
+// Même principe que la table azimuth
+//
+// Commandes: E10, E20, etc. pour calibrer (E = Elevation)
+//           ETABLE pour afficher, ERESET pour réinitialiser
+
+#define EL_TABLE_POINTS      10    // Nombre de points (0,10,20...90)
+#define EL_TABLE_STEP        10    // Intervalle en degrés entre points
+#define EEPROM_EL_TABLE      250   // Adresse début table (10 × 4 bytes = 40 bytes)
+                                   // Occupe adresses 250-289
+
 // Adresses réservées pour futures extensions
-#define EEPROM_RESERVED_1  24
-#define EEPROM_RESERVED_2  32
+#define EEPROM_RESERVED_1    300
+#define EEPROM_RESERVED_2    308
 
 // ════════════════════════════════════════════════════════════════
 // INVERSION SENS ENCODEURS (SSI et Potentiomètres)
@@ -442,8 +475,8 @@
 //   - Moteurs lents EME: 2.0° à 5.0° pour élévation
 //   - Ajuster selon vitesse moteurs (21 min/360° = 0.29°/sec)
 
-#define MANUAL_INCREMENT_AZ  5.0        // Incrément manuel azimuth (degrés, 1 décimale)
-#define MANUAL_INCREMENT_EL  2.0        // Incrément manuel élévation (degrés, 1 décimale)
+#define MANUAL_INCREMENT_AZ  50.0        // Incrément manuel azimuth (degrés, 1 décimale)
+#define MANUAL_INCREMENT_EL  20.0        // Incrément manuel élévation (degrés, 1 décimale)
 
 // ─────────────────────────────────────────────────────────────────
 // NOMS COMPOSANTS NEXTION (personnalisable selon votre IHM)

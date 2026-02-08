@@ -18,8 +18,12 @@
 
 extern float currentAz;     // encoder_ssi.cpp
 extern float currentEl;     // encoder_ssi.cpp
-extern float targetAz;      // motor_stepper.cpp
-extern float targetEl;      // motor_stepper.cpp
+extern float targetAz;      // motor_stepper.cpp / motor_nano.cpp
+extern float targetEl;      // motor_stepper.cpp / motor_nano.cpp
+
+// Valeur sentinel pour "pas de cible active"
+// IMPORTANT: -999.0 au lieu de -1.0 pour permettre les cibles négatives (ex: El = -5°)
+#define NO_TARGET -999.0
 extern int rawCountsAz;     // encoder_ssi.cpp
 extern int rawCountsEl;     // encoder_ssi.cpp
 extern long turnsAz;        // encoder_ssi.cpp
@@ -76,8 +80,8 @@ void parseEasycomCommand(String command) {
     }
 
     if (isStopCmd) {
-        targetAz = -1.0;
-        targetEl = -1.0;
+        targetAz = NO_TARGET;
+        targetEl = NO_TARGET;
 
         #if DEBUG_MOTOR_CMD
             Serial.println(F("[STOP] Arrêt demandé"));
@@ -145,20 +149,75 @@ void parseEasycomCommand(String command) {
     }
 
     // ─────────────────────────────────────────────────────────────
-    // CALIBRATION AZIMUTH: Z123.5
+    // COMMANDES TABLE CORRECTION AZIMUTH (POT_MT uniquement)
+    // ─────────────────────────────────────────────────────────────
+    // C10, C20, etc. → Calibrer point de table (sans reset ADC)
+    // CTABLE → Afficher table complète
+    // CRESET → Réinitialiser table à valeurs linéaires
+
+    #if (ENCODER_AZ_TYPE == ENCODER_POT_MT)
+        // CTABLE: Afficher table correction
+        if (command == "CTABLE") {
+            printAzCorrectionTable();
+            sendPositionResponse();
+            return;
+        }
+
+        // CRESET: Réinitialiser table à linéaire
+        if (command == "CRESET") {
+            resetAzCorrectionTable();
+            sendPositionResponse();
+            return;
+        }
+
+        // C10, C20, etc.: Calibrer un point de table
+        // (sans reset accumulatedAdcAz, juste enregistrer le point)
+        if (command.startsWith("C") && command.length() > 1 && isDigit(command.charAt(1))) {
+            float cal = command.substring(1).toFloat();
+            calibrateAzTablePoint(cal);
+            sendPositionResponse();
+            return;
+        }
+    #endif
+
+    // ─────────────────────────────────────────────────────────────
+    // COMMANDES TABLE CORRECTION ÉLÉVATION (POT_MT uniquement)
+    // ─────────────────────────────────────────────────────────────
+    // E10, E20, etc. → Calibrer point de table élévation
+    // ETABLE → Afficher table complète
+    // ERESET → Réinitialiser table à valeurs linéaires
+
+    #if (ENCODER_EL_TYPE == ENCODER_POT_MT)
+        // ETABLE: Afficher table correction élévation
+        if (command == "ETABLE") {
+            printElCorrectionTable();
+            sendPositionResponse();
+            return;
+        }
+
+        // ERESET: Réinitialiser table élévation à linéaire
+        if (command == "ERESET") {
+            resetElCorrectionTable();
+            sendPositionResponse();
+            return;
+        }
+
+        // E10, E20, etc.: Calibrer un point de table élévation
+        if (command.startsWith("E") && command.length() > 1 && isDigit(command.charAt(1))) {
+            float cal = command.substring(1).toFloat();
+            calibrateElTablePoint(cal);
+            sendPositionResponse();
+            return;
+        }
+    #endif
+
+    // ─────────────────────────────────────────────────────────────
+    // CALIBRATION AZIMUTH: Z123.5 (Reset ADC + calibre point table)
     // ─────────────────────────────────────────────────────────────
 
     if (command.startsWith("Z") && command.length() > 1) {
         float cal = command.substring(1).toFloat();
-        offsetStepsAz = (turnsAz * 4096L) + rawCountsAz - (long)(cal * 4096.0 * GEAR_RATIO_AZ / 360.0);
-        EEPROM.put(EEPROM_OFFSET_AZ, offsetStepsAz);
-
-        #if DEBUG_SERIAL
-            Serial.print(F("[CAL] Az = "));
-            Serial.print(cal, 1);
-            Serial.println(F("°"));
-        #endif
-
+        calibrateAz(cal);  // Appel fonction calibration (gère POT_MT et SSI)
         sendPositionResponse();
         return;
     }
@@ -170,15 +229,7 @@ void parseEasycomCommand(String command) {
 
     if (command.startsWith("S") && command.length() > 1 && isDigit(command.charAt(1))) {
         float cal = command.substring(1).toFloat();
-        offsetStepsEl = (long)rawCountsEl - (long)(cal * 4095.0 / 90.0);
-        EEPROM.put(EEPROM_OFFSET_EL, offsetStepsEl);
-
-        #if DEBUG_SERIAL
-            Serial.print(F("[CAL] El = "));
-            Serial.print(cal, 1);
-            Serial.println(F("°"));
-        #endif
-
+        calibrateEl(cal);  // Appel fonction calibration (gère POT_MT et SSI)
         sendPositionResponse();
         return;
     }
@@ -203,22 +254,14 @@ void parseEasycomCommand(String command) {
         if (valueStr.length() > 0) {
             float newTarget = valueStr.toFloat();
 
-            // Filtre anti-vibration: ignorer si < 0.15° de position actuelle
-            if (abs(newTarget - currentAz) < MICRO_MOVEMENT_FILTER) {
-                targetAz = -1.0;  // Pas de mouvement
+            // Toujours accepter le nouveau target (POSITION_TOLERANCE dans motor_nano
+            // gère le seuil de mouvement, et le Nextion doit voir chaque mise à jour)
+            targetAz = newTarget;
 
-                #if DEBUG_EASYCOM_PARSE
-                    Serial.print(F("[AZ] Micro-mvt ignoré: "));
-                    Serial.println(abs(newTarget - currentAz), 2);
-                #endif
-            } else {
-                targetAz = newTarget;
-
-                #if DEBUG_MOTOR_CMD
-                    Serial.print(F("[GOTO] Az="));
-                    Serial.println(newTarget, 1);
-                #endif
-            }
+            #if DEBUG_MOTOR_CMD
+                Serial.print(F("[GOTO] Az="));
+                Serial.println(newTarget, 1);
+            #endif
         }
     }
 
@@ -238,22 +281,13 @@ void parseEasycomCommand(String command) {
         if (valueStr.length() > 0) {
             float newTarget = valueStr.toFloat();
 
-            // Filtre anti-vibration
-            if (abs(newTarget - currentEl) < MICRO_MOVEMENT_FILTER) {
-                targetEl = -1.0;
+            // Toujours accepter le nouveau target
+            targetEl = newTarget;
 
-                #if DEBUG_EASYCOM_PARSE
-                    Serial.print(F("[EL] Micro-mvt ignoré: "));
-                    Serial.println(abs(newTarget - currentEl), 2);
-                #endif
-            } else {
-                targetEl = newTarget;
-
-                #if DEBUG_MOTOR_CMD
-                    Serial.print(F("[GOTO] El="));
-                    Serial.println(newTarget, 1);
-                #endif
-            }
+            #if DEBUG_MOTOR_CMD
+                Serial.print(F("[GOTO] El="));
+                Serial.println(newTarget, 1);
+            #endif
         }
     }
 

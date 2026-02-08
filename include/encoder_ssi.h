@@ -30,6 +30,10 @@ extern int rawCountsEl;
 extern long turnsAz;     // Nombre de tours azimuth (sauvegardé EEPROM)
 extern long turnsEl;     // Nombre de tours élévation (optionnel)
 
+// Accumulation ADC pour méthode cumulative (POT_MT)
+extern long accumulatedAdcAz;  // ADC cumulé azimuth (sauvegardé EEPROM)
+extern long accumulatedAdcEl;  // ADC cumulé élévation (optionnel)
+
 // Offsets calibration (en steps absolus, sauvegardés EEPROM)
 extern long offsetStepsAz;
 extern long offsetStepsEl;
@@ -146,6 +150,93 @@ void saveCalibrationToEEPROM();
  * Format: "Az: 123.5° (raw:2048, turns:1) | El: 45.0° (raw:1024)"
  */
 void printEncoderDebug();
+
+/**
+ * Réinitialisation buffer filtrage potentiomètre azimuth
+ * @param adcValue Valeur ADC pour remplir le buffer
+ *
+ * CRITIQUE: Appelé lors de la calibration pour assurer
+ * la cohérence entre l'offset calculé et le buffer de filtrage.
+ * Sans cette réinitialisation, la moyenne filtrée diffère de
+ * la valeur utilisée pour calculer l'offset, causant une
+ * position incorrecte après calibration.
+ */
+void resetPotBufferAz(int adcValue);
+
+/**
+ * Réinitialisation buffer filtrage potentiomètre élévation
+ * @param adcValue Valeur ADC pour remplir le buffer
+ *
+ * CRITIQUE: Même logique que resetPotBufferAz() pour l'élévation.
+ */
+void resetPotBufferEl(int adcValue);
+
+// ════════════════════════════════════════════════════════════════
+// TABLE DE CORRECTION AZIMUTH (Compensation non-linéarité)
+// ════════════════════════════════════════════════════════════════
+
+/**
+ * Chargement table correction depuis EEPROM
+ * Si table vide (0xFFFFFFFF), initialise avec valeurs linéaires
+ */
+void loadAzCorrectionTable();
+
+/**
+ * Calibration d'un point de la table
+ * @param realDegrees Angle réel mesuré (0, 10, 20, ... 340)
+ *
+ * Enregistre la valeur ADC cumulée actuelle pour cet angle.
+ * Commande Easycom: "C45" calibre le point 40° (arrondi au plus proche)
+ */
+void calibrateAzTablePoint(float realDegrees);
+
+/**
+ * Conversion ADC cumulé → degrés avec interpolation table
+ * @param accumulatedAdc Valeur ADC cumulée depuis calibration
+ * @return Angle en degrés (interpolé entre points de la table)
+ */
+float adcToDegrees(long accumulatedAdc);
+
+/**
+ * Affichage table correction complète (debug)
+ * Format: "Point 0: ADC=0 → 0°"
+ */
+void printAzCorrectionTable();
+
+/**
+ * Reset table à valeurs linéaires (basées sur GEAR_RATIO_AZ)
+ */
+void resetAzCorrectionTable();
+
+// ════════════════════════════════════════════════════════════════
+// TABLE DE CORRECTION ÉLÉVATION (Compensation non-linéarité)
+// ════════════════════════════════════════════════════════════════
+
+/**
+ * Chargement table correction élévation depuis EEPROM
+ */
+void loadElCorrectionTable();
+
+/**
+ * Calibration d'un point de la table élévation
+ * @param realDegrees Angle réel mesuré (0, 10, 20, ... 90)
+ */
+void calibrateElTablePoint(float realDegrees);
+
+/**
+ * Conversion ADC cumulé → degrés élévation avec interpolation table
+ */
+float adcToDegreesEl(long accumulatedAdc);
+
+/**
+ * Affichage table correction élévation complète
+ */
+void printElCorrectionTable();
+
+/**
+ * Reset table élévation à valeurs linéaires
+ */
+void resetElCorrectionTable();
 
 // ════════════════════════════════════════════════════════════════
 // FONCTIONS INTERNES (Helpers)

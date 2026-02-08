@@ -7,6 +7,7 @@
 
 #include "encoder_ssi.h"
 #include "easycom.h"  // Pour printEncoderRawDebug()
+#include "network.h"  // Pour sendToClient()
 #include <EEPROM.h>
 
 // ════════════════════════════════════════════════════════════════
@@ -25,7 +26,11 @@ int rawCountsEl = 0;
 int previousRawAz = 0;
 int previousRawEl = 0;
 
-// Tracking tours
+// Accumulation ADC pour méthode cumulative (POT_MT)
+long accumulatedAdcAz = 0;  // ADC total accumulé depuis calibration
+long accumulatedAdcEl = 0;
+
+// Tracking tours (utilisé pour SSI_INC, gardé pour compatibilité)
 long turnsAz = 0;
 long turnsEl = 0;
 
@@ -52,6 +57,32 @@ unsigned long lastEncoderReadTime = 0;
 // Variables tracking tours potentiomètre multi-tours
 // Note: On utilise turnsAz/turnsEl (variables globales) pour les compteurs de tours POT_MT
 // previousRawAdc est déclaré static dans updateEncoders() pour la détection wraparound
+
+// Filtrage EMA azimuth (module-level pour reset lors calibration)
+float filteredAz = 0.0;
+bool azFilterInitialized = false;
+
+// ════════════════════════════════════════════════════════════════
+// TABLE DE CORRECTION AZIMUTH (35 points)
+// ════════════════════════════════════════════════════════════════
+// Chaque élément stocke la valeur ADC cumulée pour l'angle correspondant
+// Index 0 = 0°, Index 1 = 10°, Index 2 = 20°, ... Index 34 = 340°
+// Interpolation linéaire entre les points pour angles intermédiaires
+
+long azCorrectionTable[AZ_TABLE_POINTS];  // ADC cumulé pour chaque point
+bool azTableLoaded = false;               // Table chargée depuis EEPROM
+
+// ════════════════════════════════════════════════════════════════
+// TABLE DE CORRECTION ÉLÉVATION (10 points)
+// ════════════════════════════════════════════════════════════════
+// Index 0 = 0°, Index 1 = 10°, ... Index 9 = 90°
+
+long elCorrectionTable[EL_TABLE_POINTS];  // ADC cumulé pour chaque point
+bool elTableLoaded = false;               // Table chargée depuis EEPROM
+
+// Filtrage EMA élévation (module-level pour reset lors calibration)
+float filteredEl = 0.0;
+bool elFilterInitialized = false;
 
 // ════════════════════════════════════════════════════════════════
 // INITIALISATION
@@ -90,6 +121,16 @@ void setupEncoders() {
     // CHARGEMENT CALIBRATION EEPROM
     // ─────────────────────────────────────────────────────────────
     loadCalibrationFromEEPROM();
+
+    // Chargement table correction azimuth (POT_MT)
+    #if (ENCODER_AZ_TYPE == ENCODER_POT_MT)
+        loadAzCorrectionTable();
+    #endif
+
+    // Chargement table correction élévation (POT_MT)
+    #if (ENCODER_EL_TYPE == ENCODER_POT_MT)
+        loadElCorrectionTable();
+    #endif
 
     // ─────────────────────────────────────────────────────────────
     // PREMIÈRE LECTURE POSITION
@@ -236,115 +277,96 @@ void updateEncoders() {
         if (currentAz > 360.0) currentAz = 360.0;
 
     #elif (ENCODER_AZ_TYPE == ENCODER_POT_MT)
-        // ─────────────────────────────────────────────────────────
-        // POTENTIOMÈTRE MULTI-TOURS (Filtrage + Tracking tours)
-        // ─────────────────────────────────────────────────────────
+        // ═══════════════════════════════════════════════════════════
+        // POTENTIOMÈTRE MULTI-TOURS AZIMUTH - MÉTHODE CUMULATIVE
+        // ═══════════════════════════════════════════════════════════
+        // Cette méthode accumule les petits changements ADC au lieu
+        // de détecter des "tours" discrets. Plus robuste et simple.
+        //
+        // Fonctionnement:
+        // 1. Lire ADC (avec REVERSE)
+        // 2. Calculer delta depuis dernière lecture
+        // 3. Corriger le delta si wraparound (±512 threshold)
+        // 4. Accumuler le delta dans accumulatedAdcAz
+        // 5. Calculer position = accumulatedAdc / (1024 * GEAR_RATIO) * 360
+        // ═══════════════════════════════════════════════════════════
 
-        // Lecture ADC brute (0-1023)
+        // ─────────────────────────────────────────────────────────
+        // ÉTAPE 1: LECTURE ADC
+        // ─────────────────────────────────────────────────────────
         int rawAdc = analogRead(POT_PIN_AZ);
         #if REVERSE_AZ
-            rawAdc = 1023 - rawAdc;  // Inversion sens
+            rawAdc = 1023 - rawAdc;
         #endif
 
         // ─────────────────────────────────────────────────────────
-        // DÉTECTION WRAPAROUND SUR ADC BRUT (AVANT FILTRAGE!)
+        // ÉTAPE 2: ACCUMULATION AVEC CORRECTION WRAPAROUND
         // ─────────────────────────────────────────────────────────
-        // Logique ORIGINALE simple qui fonctionnait.
-        // Seuil 768: si ADC saute de plus de 3/4 de la plage en une lecture
+        // On accumule les petits changements. Si le delta est > 512,
+        // c'est un wraparound qu'on corrige.
 
-        static int previousRawAdc = rawAdc;  // Valeur brute précédente
+        static bool azAccumInitialized = false;
 
-        int adcDelta = rawAdc - previousRawAdc;
-
-        // Passage 1023 → 0 (saut négatif brutal)
-        if (adcDelta < -768) {
-            turnsAz++;
-            EEPROM.put(EEPROM_TURNS_AZ, turnsAz);
-            #if DEBUG_SERIAL
-                Serial.print(F("✓✓✓ WRAP++ Az | ADC:"));
-                Serial.print(previousRawAdc);
-                Serial.print(F("→"));
-                Serial.print(rawAdc);
-                Serial.print(F(" | turns="));
-                Serial.println(turnsAz);
-            #endif
+        if (!azAccumInitialized) {
+            previousRawAz = rawAdc;
+            azAccumInitialized = true;
         }
 
-        // Passage 0 → 1023 (saut positif brutal)
-        if (adcDelta > 768) {
-            turnsAz--;
-            EEPROM.put(EEPROM_TURNS_AZ, turnsAz);
-            #if DEBUG_SERIAL
-                Serial.print(F("✓✓✓ WRAP-- Az | ADC:"));
-                Serial.print(previousRawAdc);
-                Serial.print(F("→"));
-                Serial.print(rawAdc);
-                Serial.print(F(" | turns="));
-                Serial.println(turnsAz);
-            #endif
+        int delta = rawAdc - previousRawAz;
+
+        // Correction wraparound: si delta trop grand, c'est un passage 0↔1023
+        if (delta > 512) {
+            delta -= 1024;  // Passage 1023→0 en sens inverse (CCW)
+        } else if (delta < -512) {
+            delta += 1024;  // Passage 0→1023 en sens inverse (CW)
         }
 
-        previousRawAdc = rawAdc;
+        // Accumuler (turnsAz stocke maintenant l'ADC accumulé, pas les tours)
+        // On réutilise offsetStepsAz pour stocker la position de référence
+        accumulatedAdcAz += delta;
 
-        // ─────────────────────────────────────────────────────────
-        // FILTRAGE MOYENNE GLISSANTE (Stabilisation affichage)
-        // ─────────────────────────────────────────────────────────
+        previousRawAz = rawAdc;
 
-        // Ajout au buffer circulaire
-        potAdcBufferAz[potBufferIndexAz] = rawAdc;
-        potBufferIndexAz = (potBufferIndexAz + 1) % POT_SAMPLES_AZ;
-        if (potBufferIndexAz == 0) potBufferFullAz = true;
-
-        // Calcul moyenne glissante
-        long adcSum = 0;
-        int sampleCount = potBufferFullAz ? POT_SAMPLES_AZ : potBufferIndexAz;
-        for (int i = 0; i < sampleCount; i++) {
-            adcSum += potAdcBufferAz[i];
+        // Sauvegarder périodiquement (pas à chaque cycle pour éviter usure EEPROM)
+        static unsigned long lastEepromSaveAz = 0;
+        if (millis() - lastEepromSaveAz > 5000) {  // Toutes les 5 secondes
+            EEPROM.put(EEPROM_TURNS_AZ, accumulatedAdcAz);
+            lastEepromSaveAz = millis();
         }
-        int adcValue = (int)(adcSum / sampleCount);
-
-        rawCountsAz = adcValue;  // Pour compatibilité debug
-
-        // Mapping ADC → degrés du tour courant (0-360°)
-        float potDegrees = ((float)adcValue / (float)POT_ADC_RESOLUTION) * 360.0;
-
-        // Contrainte 0-360° (sécurité)
-        if (potDegrees < 0.0) potDegrees = 0.0;
-        if (potDegrees > 360.0) potDegrees = 360.0;
 
         // ─────────────────────────────────────────────────────────
-        // CALCUL POSITION ABSOLUE (Tours multiples + Gear Ratio + Offset)
+        // ÉTAPE 3: CALCUL POSITION EN DEGRÉS (Table d'interpolation)
         // ─────────────────────────────────────────────────────────
-        // Position totale pot (degrés) = (nombre de tours × 360°) + position dans tour courant
-        // Position antenne (degrés) = (position pot - offset) / GEAR_RATIO_AZ
-        //
-        // Exemple: Si GEAR_RATIO_AZ = 10.0 (10 tours pot = 1 tour antenne)
-        //   - Pot à 3600° (10 tours) → Antenne à 360° (1 tour)
-        //   - Normalisation 0-360° pour compatibilité Easycom/PstRotator
+        // Utilise la table de correction avec interpolation linéaire
+        // au lieu du simple GEAR_RATIO (compense non-linéarité pot)
 
-        float potPositionTotal = (turnsAz * 360.0) + potDegrees;
+        float rawAzDeg = adcToDegrees(accumulatedAdcAz);
 
-        // Appliquer l'offset de calibration (converti de steps en degrés pot)
-        float offsetDegreesPot = ((float)offsetStepsAz / (float)POT_ADC_RESOLUTION) * 360.0;
-        currentAz = (potPositionTotal - offsetDegreesPot) / GEAR_RATIO_AZ;
+        // ─────────────────────────────────────────────────────────
+        // ÉTAPE 4: FILTRAGE EMA (Exponential Moving Average)
+        // ─────────────────────────────────────────────────────────
+        // Lisse les fluctuations ADC à l'arrêt
+        // Alpha = 0.25 → 25% nouvelle valeur, 75% ancienne (bon compromis)
+        // Variables filteredAz et azFilterInitialized sont module-level
+        // pour permettre reset lors de la calibration
 
-        // Normalisation 0-360° (requise par PstRotator)
+        if (!azFilterInitialized) {
+            filteredAz = rawAzDeg;
+            azFilterInitialized = true;
+        } else {
+            filteredAz = 0.25 * rawAzDeg + 0.75 * filteredAz;
+        }
+        currentAz = filteredAz;
+
+        // Normalisation 0-360° pour Easycom/PstRotator
         while (currentAz >= 360.0) currentAz -= 360.0;
         while (currentAz < 0.0) currentAz += 360.0;
 
-        // DEBUG TEMPORAIRE
-        #if DEBUG_SERIAL
-            Serial.print(F("POT | ADC:"));
-            Serial.print(rawAdc);
-            Serial.print(F(" filt:"));
-            Serial.print(adcValue);
-            Serial.print(F(" deg:"));
-            Serial.print(potDegrees, 1);
-            Serial.print(F(" turns:"));
-            Serial.print(turnsAz);
-            Serial.print(F(" → Az:"));
-            Serial.println(currentAz, 1);
-        #endif
+        // Snap à 0° si très proche de 360° (évite 359.9° après calibration à 0°)
+        // Avec limite mécanique à ~343°, on ne sera jamais légitimement à 359°
+        if (currentAz > 359.5) currentAz = 0.0;
+
+        rawCountsAz = rawAdc;  // Pour debug
 
     #endif
 
@@ -364,8 +386,10 @@ void updateEncoders() {
 
     #elif (ENCODER_EL_TYPE == ENCODER_POT_1T)
         // ─────────────────────────────────────────────────────────
-        // POTENTIOMÈTRE 1 TOUR (Filtrage moyenne glissante)
+        // POTENTIOMÈTRE 1 TOUR (Filtrage + Offset + Gear Ratio)
         // ─────────────────────────────────────────────────────────
+        // Utilisé quand la plage mécanique < 1 tour du pot
+        // (ex: élévation -10° à +60° = 70° → pot fait ~0.97 tour)
 
         // Lecture ADC brute (0-1023)
         int rawAdcEl = analogRead(POT_PIN_EL);
@@ -388,123 +412,88 @@ void updateEncoders() {
 
         rawCountsEl = adcValueEl;  // Pour compatibilité debug
 
-        // Mapping direct: ADC 0-1023 → 0-90° (pour élévation, range typique 0-90°)
-        currentEl = ((float)adcValueEl / (float)POT_ADC_RESOLUTION) * 90.0;
+        // ─────────────────────────────────────────────────────────
+        // CALCUL POSITION AVEC GEAR_RATIO ET OFFSET
+        // ─────────────────────────────────────────────────────────
+        // potDegrees = position du pot (0-360°)
+        // offsetDegreesPot = offset en degrés pot (depuis calibration)
+        // currentEl = (potDegrees - offset) / GEAR_RATIO
 
-        // Contrainte 0-90° (sécurité)
-        if (currentEl < 0.0) currentEl = 0.0;
-        if (currentEl > 90.0) currentEl = 90.0;
+        float potDegreesEl = ((float)adcValueEl / (float)POT_ADC_RESOLUTION) * 360.0;
+        float offsetDegreesPotEl = ((float)offsetStepsEl / (float)POT_ADC_RESOLUTION) * 360.0;
+        currentEl = (potDegreesEl - offsetDegreesPotEl) / GEAR_RATIO_EL;
+
+        // Contrainte -15° à +95° (marge de sécurité)
+        if (currentEl < -15.0) currentEl = -15.0;
+        if (currentEl > 95.0) currentEl = 95.0;
 
     #elif (ENCODER_EL_TYPE == ENCODER_POT_MT)
-        // ─────────────────────────────────────────────────────────
-        // POTENTIOMÈTRE MULTI-TOURS (Filtrage + Tracking tours)
-        // ─────────────────────────────────────────────────────────
+        // ═══════════════════════════════════════════════════════════
+        // POTENTIOMÈTRE MULTI-TOURS ÉLÉVATION (MÉTHODE CUMULATIVE)
+        // ═══════════════════════════════════════════════════════════
+        // Même méthode que l'azimuth: accumulation ADC + table correction
+        // Compense la non-linéarité du potentiomètre
 
-        // Lecture ADC brute (0-1023)
+        // ─────────────────────────────────────────────────────────
+        // ÉTAPE 1: LECTURE ADC
+        // ─────────────────────────────────────────────────────────
         int rawAdcEl = analogRead(POT_PIN_EL);
         #if REVERSE_EL
-            rawAdcEl = 1023 - rawAdcEl;  // Inversion sens
+            rawAdcEl = 1023 - rawAdcEl;
         #endif
 
         // ─────────────────────────────────────────────────────────
-        // DÉTECTION WRAPAROUND SUR ADC BRUT (AVANT FILTRAGE!)
+        // ÉTAPE 2: ACCUMULATION AVEC CORRECTION WRAPAROUND
         // ─────────────────────────────────────────────────────────
-        // Logique ORIGINALE simple qui fonctionnait.
-        // Seuil 768: si ADC saute de plus de 3/4 de la plage en une lecture
+        static bool elAccumInitialized = false;
+        static int previousRawEl = 0;
 
-        static int previousRawAdcEl = rawAdcEl;  // Valeur brute précédente
-
-        int adcDeltaEl = rawAdcEl - previousRawAdcEl;
-
-        // Passage 1023 → 0 (saut négatif brutal)
-        if (adcDeltaEl < -768) {
-            turnsEl++;
-            EEPROM.put(EEPROM_TURNS_EL, turnsEl);
-            #if DEBUG_SERIAL
-                Serial.print(F("✓✓✓ WRAP++ El | ADC:"));
-                Serial.print(previousRawAdcEl);
-                Serial.print(F("→"));
-                Serial.print(rawAdcEl);
-                Serial.print(F(" | turns="));
-                Serial.println(turnsEl);
-            #endif
+        if (!elAccumInitialized) {
+            previousRawEl = rawAdcEl;
+            elAccumInitialized = true;
         }
 
-        // Passage 0 → 1023 (saut positif brutal)
-        if (adcDeltaEl > 768) {
-            turnsEl--;
-            EEPROM.put(EEPROM_TURNS_EL, turnsEl);
-            #if DEBUG_SERIAL
-                Serial.print(F("✓✓✓ WRAP-- El | ADC:"));
-                Serial.print(previousRawAdcEl);
-                Serial.print(F("→"));
-                Serial.print(rawAdcEl);
-                Serial.print(F(" | turns="));
-                Serial.println(turnsEl);
-            #endif
+        int deltaEl = rawAdcEl - previousRawEl;
+
+        // Correction wraparound
+        if (deltaEl > 512) {
+            deltaEl -= 1024;
+        } else if (deltaEl < -512) {
+            deltaEl += 1024;
         }
 
-        previousRawAdcEl = rawAdcEl;
+        // Accumuler
+        accumulatedAdcEl += deltaEl;
+        previousRawEl = rawAdcEl;
 
-        // ─────────────────────────────────────────────────────────
-        // FILTRAGE MOYENNE GLISSANTE (Stabilisation affichage)
-        // ─────────────────────────────────────────────────────────
-
-        // Ajout au buffer circulaire
-        potAdcBufferEl[potBufferIndexEl] = rawAdcEl;
-        potBufferIndexEl = (potBufferIndexEl + 1) % POT_SAMPLES_EL;
-        if (potBufferIndexEl == 0) potBufferFullEl = true;
-
-        // Calcul moyenne glissante
-        long adcSumEl = 0;
-        int sampleCountEl = potBufferFullEl ? POT_SAMPLES_EL : potBufferIndexEl;
-        for (int i = 0; i < sampleCountEl; i++) {
-            adcSumEl += potAdcBufferEl[i];
+        // Sauvegarder périodiquement
+        static unsigned long lastEepromSaveEl = 0;
+        if (millis() - lastEepromSaveEl > 5000) {
+            EEPROM.put(EEPROM_TURNS_EL, accumulatedAdcEl);
+            lastEepromSaveEl = millis();
         }
-        int adcValueEl = (int)(adcSumEl / sampleCountEl);
-
-        rawCountsEl = adcValueEl;  // Pour compatibilité debug
-
-        // Mapping ADC → degrés du tour courant (0-360°)
-        float potDegreesEl = ((float)adcValueEl / (float)POT_ADC_RESOLUTION) * 360.0;
-
-        // Contrainte 0-360° (sécurité)
-        if (potDegreesEl < 0.0) potDegreesEl = 0.0;
-        if (potDegreesEl > 360.0) potDegreesEl = 360.0;
 
         // ─────────────────────────────────────────────────────────
-        // CALCUL POSITION ABSOLUE (Tours multiples + Gear Ratio + Offset)
+        // ÉTAPE 3: CALCUL POSITION EN DEGRÉS (Table d'interpolation)
         // ─────────────────────────────────────────────────────────
-        // Position totale pot (degrés) = (nombre de tours × 360°) + position dans tour courant
-        // Position antenne (degrés) = (position pot - offset) / GEAR_RATIO_EL
-        //
-        // Exemple: Si GEAR_RATIO_EL = 4.0 (4 tours pot = 1 tour élévation 0-90°)
-        //   - Pot à 360° (1 tour) → Élévation à 90° (1/4 tour)
-        //   - Normalisation 0-90° pour compatibilité Easycom/PstRotator
+        float rawElDeg = adcToDegreesEl(accumulatedAdcEl);
 
-        float potPositionTotalEl = (turnsEl * 360.0) + potDegreesEl;
+        // ─────────────────────────────────────────────────────────
+        // ÉTAPE 4: FILTRAGE EMA
+        // ─────────────────────────────────────────────────────────
+        if (!elFilterInitialized) {
+            filteredEl = rawElDeg;
+            elFilterInitialized = true;
+        } else {
+            filteredEl = 0.25 * rawElDeg + 0.75 * filteredEl;
+        }
+        currentEl = filteredEl;
 
-        // Appliquer l'offset de calibration (converti de steps en degrés pot)
-        float offsetDegreesPotEl = ((float)offsetStepsEl / (float)POT_ADC_RESOLUTION) * 360.0;
-        currentEl = (potPositionTotalEl - offsetDegreesPotEl) / GEAR_RATIO_EL;
+        // Contrainte -15° à +95°
+        if (currentEl < -15.0) currentEl = -15.0;
+        if (currentEl > 95.0) currentEl = 95.0;
 
-        // Normalisation 0-90° (typique pour élévation)
-        while (currentEl >= 90.0) currentEl -= 90.0;
-        while (currentEl < 0.0) currentEl += 90.0;
-
-        // DEBUG TEMPORAIRE
-        #if DEBUG_SERIAL
-            Serial.print(F("POT EL | ADC:"));
-            Serial.print(rawAdcEl);
-            Serial.print(F(" filt:"));
-            Serial.print(adcValueEl);
-            Serial.print(F(" deg:"));
-            Serial.print(potDegreesEl, 1);
-            Serial.print(F(" turns:"));
-            Serial.print(turnsEl);
-            Serial.print(F(" → El:"));
-            Serial.println(currentEl, 1);
-        #endif
+        rawCountsEl = rawAdcEl;  // Pour debug
 
     #endif
 
@@ -643,6 +632,47 @@ int detectTurnTransition(int currentRaw, int previousRaw) {
 }
 
 // ════════════════════════════════════════════════════════════════
+// RESET BUFFER FILTRAGE POTENTIOMÈTRE
+// ════════════════════════════════════════════════════════════════
+
+void resetPotBufferAz(int adcValue) {
+    #if (ENCODER_AZ_TYPE == ENCODER_POT_1T) || (ENCODER_AZ_TYPE == ENCODER_POT_MT)
+        // Remplir le buffer avec la valeur actuelle pour cohérence
+        for (int i = 0; i < POT_SAMPLES_AZ; i++) {
+            potAdcBufferAz[i] = adcValue;
+        }
+        potBufferIndexAz = 0;
+        potBufferFullAz = true;
+        rawCountsAz = adcValue;
+
+        // Reset valeur précédente pour éviter faux wraparound
+        previousRawAz = adcValue;
+
+        #if DEBUG_SERIAL
+            Serial.print(F("✓ Buffer Az reset ADC="));
+            Serial.println(adcValue);
+        #endif
+    #endif
+}
+
+void resetPotBufferEl(int adcValue) {
+    #if (ENCODER_EL_TYPE == ENCODER_POT_1T) || (ENCODER_EL_TYPE == ENCODER_POT_MT)
+        // Remplir le buffer avec la valeur actuelle pour cohérence
+        for (int i = 0; i < POT_SAMPLES_EL; i++) {
+            potAdcBufferEl[i] = adcValue;
+        }
+        potBufferIndexEl = 0;
+        potBufferFullEl = true;
+        rawCountsEl = adcValue;
+
+        #if DEBUG_SERIAL
+            Serial.print(F("✓ Buffer El réinitialisé avec ADC="));
+            Serial.println(adcValue);
+        #endif
+    #endif
+}
+
+// ════════════════════════════════════════════════════════════════
 // CALIBRATION AZIMUTH
 // ════════════════════════════════════════════════════════════════
 
@@ -651,41 +681,71 @@ void calibrateAz(float realDegrees) {
     // Ex: Pointer vers Nord (0°) et envoyer commande "Z0.0"
 
     #if (ENCODER_AZ_TYPE == ENCODER_POT_MT)
+        // ═══════════════════════════════════════════════════════════
+        // CALIBRATION POTENTIOMÈTRE MULTI-TOURS (TABLE DE CORRECTION)
+        // ═══════════════════════════════════════════════════════════
+        // La commande Z calibre UN point de la table:
+        // - Reset accumulatedAdcAz = 0 (point de référence)
+        // - Enregistre ce point dans la table de correction
+        //
+        // Pour calibrer d'autres points, utiliser la commande C:
+        // C10, C20, C30, etc.
+
+        // Lire ADC actuel
+        int currentAdc = analogRead(POT_PIN_AZ);
+        #if REVERSE_AZ
+            currentAdc = 1023 - currentAdc;
+        #endif
+
+        // Reset accumulation à 0 (point de référence)
+        accumulatedAdcAz = 0;
+        EEPROM.put(EEPROM_TURNS_AZ, accumulatedAdcAz);
+
+        // Reset previousRawAz pour éviter faux delta au prochain cycle
+        previousRawAz = currentAdc;
+
+        // Reset buffer filtrage
+        resetPotBufferAz(currentAdc);
+
+        // Reset filtre EMA
+        filteredAz = realDegrees;
+        azFilterInitialized = true;
+
         // ─────────────────────────────────────────────────────────
-        // CALIBRATION POTENTIOMÈTRE MULTI-TOURS
+        // RECALCUL COMPLET TABLE DE CORRECTION
         // ─────────────────────────────────────────────────────────
-        // Pour calibrer à realDegrees:
-        // 1. Reset turnsAz à 0
-        // 2. Calculer la position actuelle du pot en degrés antenne
-        // 3. Stocker l'offset pour que currentAz = realDegrees
+        // La commande Z recalcule TOUTE la table avec realDegrees comme référence ADC=0
+        // Formule: ADC = (angle - realDegrees) * GEAR_RATIO * 1024 / 360
 
-        // Position actuelle du pot (degrés dans le tour courant)
-        float potDegrees = ((float)rawCountsAz / (float)POT_ADC_RESOLUTION) * 360.0;
+        const float RATIO_AZ = 4.4;  // Même ratio que dans resetAzCorrectionTable()
 
-        // Reset compteur de tours
-        turnsAz = 0;
-        EEPROM.put(EEPROM_TURNS_AZ, turnsAz);
+        for (int i = 0; i < AZ_TABLE_POINTS; i++) {
+            float angle = (float)(i * AZ_TABLE_STEP);  // 0, 10, 20, ... 340
+            // ADC relatif à la position de calibration
+            azCorrectionTable[i] = (long)((angle - realDegrees) * RATIO_AZ * 1024.0 / 360.0);
+        }
 
-        // Position pot sans offset = potDegrees / GEAR_RATIO_AZ
-        // On veut que cette position = realDegrees
-        // Donc offset (en degrés antenne) = (potDegrees / GEAR_RATIO_AZ) - realDegrees
-        // On stocke l'offset en "steps" pot (pour compatibilité)
-        float offsetDegrees = (potDegrees / GEAR_RATIO_AZ) - realDegrees;
-        offsetStepsAz = (long)(offsetDegrees * GEAR_RATIO_AZ * POT_ADC_RESOLUTION / 360.0);
-
-        EEPROM.put(EEPROM_OFFSET_AZ, offsetStepsAz);
+        // Sauvegarder dans EEPROM
+        for (int i = 0; i < AZ_TABLE_POINTS; i++) {
+            EEPROM.put(EEPROM_AZ_TABLE + (i * sizeof(long)), azCorrectionTable[i]);
+        }
 
         // Mise à jour position courante immédiatement
         currentAz = realDegrees;
 
         #if DEBUG_SERIAL
-            Serial.print(F("✓ Calibration Az POT_MT: "));
+            Serial.println(F("═══════════════════════════════════════"));
+            Serial.print(F("✓ CALIBRATION Az: "));
             Serial.print(realDegrees, 1);
-            Serial.print(F("° (potDeg="));
-            Serial.print(potDegrees, 1);
-            Serial.print(F(", offset="));
-            Serial.print(offsetStepsAz);
-            Serial.println(F(")"));
+            Serial.println(F("°"));
+            Serial.print(F("  ADC actuel: ")); Serial.println(currentAdc);
+            Serial.println(F("  Table recalculée avec cette ref:"));
+            Serial.print(F("    0° = ADC ")); Serial.println(azCorrectionTable[0]);
+            Serial.print(F("    ")); Serial.print((int)realDegrees); Serial.print(F("° = ADC "));
+            int refIndex = (int)(realDegrees / AZ_TABLE_STEP);
+            Serial.println(azCorrectionTable[refIndex]);
+            Serial.print(F("    340° = ADC ")); Serial.println(azCorrectionTable[34]);
+            Serial.println(F("═══════════════════════════════════════"));
         #endif
 
     #else
@@ -725,21 +785,31 @@ void calibrateEl(float realDegrees) {
     // Calibration élévation: définit position courante = angle réel donné
     // Ex: Pointer à l'horizon (0°) ou au zénith (90°) et calibrer
 
-    #if (ENCODER_EL_TYPE == ENCODER_POT_MT)
+    #if (ENCODER_EL_TYPE == ENCODER_POT_1T)
         // ─────────────────────────────────────────────────────────
-        // CALIBRATION POTENTIOMÈTRE MULTI-TOURS
+        // CALIBRATION POTENTIOMÈTRE 1 TOUR
         // ─────────────────────────────────────────────────────────
+        // Pour calibrer à realDegrees:
+        // 1. Lire ADC directement (pas la moyenne filtrée)
+        // 2. Réinitialiser le buffer avec la valeur ADC actuelle
+        // 3. Calculer et stocker l'offset
 
-        // Position actuelle du pot (degrés dans le tour courant)
-        float potDegrees = ((float)rawCountsEl / (float)POT_ADC_RESOLUTION) * 360.0;
+        // Lire ADC directement pour avoir la valeur actuelle exacte
+        int currentAdc = analogRead(POT_PIN_EL);
+        #if REVERSE_EL
+            currentAdc = 1023 - currentAdc;
+        #endif
 
-        // Reset compteur de tours
-        turnsEl = 0;
-        EEPROM.put(EEPROM_TURNS_EL, turnsEl);
+        // Position actuelle du pot (degrés)
+        float potDegrees = ((float)currentAdc / (float)POT_ADC_RESOLUTION) * 360.0;
 
-        // Calcul offset
-        float offsetDegrees = (potDegrees / GEAR_RATIO_EL) - realDegrees;
-        offsetStepsEl = (long)(offsetDegrees * GEAR_RATIO_EL * POT_ADC_RESOLUTION / 360.0);
+        // Réinitialiser le buffer avec la valeur ADC actuelle
+        resetPotBufferEl(currentAdc);
+
+        // Calcul offset: on veut que (potDegrees - offset) / GEAR_RATIO = realDegrees
+        // Donc offset = potDegrees - (realDegrees * GEAR_RATIO)
+        float offsetDegrees = potDegrees - (realDegrees * GEAR_RATIO_EL);
+        offsetStepsEl = (long)(offsetDegrees * POT_ADC_RESOLUTION / 360.0);
 
         EEPROM.put(EEPROM_OFFSET_EL, offsetStepsEl);
 
@@ -747,13 +817,75 @@ void calibrateEl(float realDegrees) {
         currentEl = realDegrees;
 
         #if DEBUG_SERIAL
-            Serial.print(F("✓ Calibration El POT_MT: "));
+            Serial.print(F("✓ Calibration El POT_1T: "));
             Serial.print(realDegrees, 1);
-            Serial.print(F("° (potDeg="));
+            Serial.print(F("° (ADC="));
+            Serial.print(currentAdc);
+            Serial.print(F(", potDeg="));
             Serial.print(potDegrees, 1);
             Serial.print(F(", offset="));
             Serial.print(offsetStepsEl);
             Serial.println(F(")"));
+        #endif
+
+    #elif (ENCODER_EL_TYPE == ENCODER_POT_MT)
+        // ═══════════════════════════════════════════════════════════
+        // CALIBRATION POTENTIOMÈTRE MULTI-TOURS (TABLE DE CORRECTION)
+        // ═══════════════════════════════════════════════════════════
+        // Même logique que calibrateAz:
+        // - Reset accumulatedAdcEl = 0
+        // - Enregistre le point dans la table
+
+        // Lire ADC actuel
+        int currentAdc = analogRead(POT_PIN_EL);
+        #if REVERSE_EL
+            currentAdc = 1023 - currentAdc;
+        #endif
+
+        // Reset accumulation à 0
+        accumulatedAdcEl = 0;
+        EEPROM.put(EEPROM_TURNS_EL, accumulatedAdcEl);
+
+        // Reset buffer filtrage
+        resetPotBufferEl(currentAdc);
+
+        // Reset filtre EMA
+        filteredEl = realDegrees;
+        elFilterInitialized = true;
+
+        // ─────────────────────────────────────────────────────────
+        // RECALCUL COMPLET TABLE DE CORRECTION
+        // ─────────────────────────────────────────────────────────
+        // La commande S recalcule TOUTE la table avec realDegrees comme référence ADC=0
+        // Formule: ADC = (angle - realDegrees) * GEAR_RATIO * 1024 / 360
+
+        for (int i = 0; i < EL_TABLE_POINTS; i++) {
+            float angle = (float)(i * EL_TABLE_STEP);  // 0, 10, 20, ... 90
+            // ADC relatif à la position de calibration
+            elCorrectionTable[i] = (long)((angle - realDegrees) * GEAR_RATIO_EL * 1024.0 / 360.0);
+        }
+
+        // Sauvegarder dans EEPROM
+        for (int i = 0; i < EL_TABLE_POINTS; i++) {
+            EEPROM.put(EEPROM_EL_TABLE + (i * sizeof(long)), elCorrectionTable[i]);
+        }
+
+        // Mise à jour position courante immédiatement
+        currentEl = realDegrees;
+
+        #if DEBUG_SERIAL
+            Serial.println(F("═══════════════════════════════════════"));
+            Serial.print(F("✓ CALIBRATION El: "));
+            Serial.print(realDegrees, 1);
+            Serial.println(F("°"));
+            Serial.print(F("  ADC actuel: ")); Serial.println(currentAdc);
+            Serial.println(F("  Table recalculée avec cette ref:"));
+            Serial.print(F("    0° = ADC ")); Serial.println(elCorrectionTable[0]);
+            int refIndex = (int)(realDegrees / EL_TABLE_STEP);
+            Serial.print(F("    ")); Serial.print((int)realDegrees); Serial.print(F("° = ADC "));
+            Serial.println(elCorrectionTable[refIndex]);
+            Serial.print(F("    90° = ADC ")); Serial.println(elCorrectionTable[9]);
+            Serial.println(F("═══════════════════════════════════════"));
         #endif
 
     #else
@@ -787,28 +919,51 @@ void loadCalibrationFromEEPROM() {
     // Chargement calibration depuis EEPROM persistante
     // Adresses définies dans config.h
 
-    EEPROM.get(EEPROM_TURNS_AZ, turnsAz);
-    EEPROM.get(EEPROM_TURNS_EL, turnsEl);
+    // ─────────────────────────────────────────────────────────────
+    // CHARGEMENT AZIMUTH
+    // ─────────────────────────────────────────────────────────────
+    #if (ENCODER_AZ_TYPE == ENCODER_POT_MT)
+        // POT_MT: Charger accumulatedAdcAz (méthode cumulative)
+        EEPROM.get(EEPROM_TURNS_AZ, accumulatedAdcAz);
+        if (accumulatedAdcAz == -1 || (unsigned long)accumulatedAdcAz == 4294967295UL) {
+            accumulatedAdcAz = 0;
+            EEPROM.put(EEPROM_TURNS_AZ, accumulatedAdcAz);
+        }
+    #else
+        // SSI/autres: Charger turnsAz (compteur de tours)
+        EEPROM.get(EEPROM_TURNS_AZ, turnsAz);
+        if (turnsAz == -1 || (unsigned long)turnsAz == 4294967295UL) {
+            turnsAz = 0;
+            EEPROM.put(EEPROM_TURNS_AZ, turnsAz);
+        }
+    #endif
+
     EEPROM.get(EEPROM_OFFSET_AZ, offsetStepsAz);
-    EEPROM.get(EEPROM_OFFSET_EL, offsetStepsEl);
-
-    // Vérification EEPROM vierge (valeur 0xFFFFFFFF = -1 en signed long)
-    // Si EEPROM jamais initialisée, reset à 0
-    if (turnsAz == -1 || (unsigned long)turnsAz == 4294967295UL) {
-        turnsAz = 0;
-        EEPROM.put(EEPROM_TURNS_AZ, turnsAz);
-    }
-
-    if (turnsEl == -1 || (unsigned long)turnsEl == 4294967295UL) {
-        turnsEl = 0;
-        EEPROM.put(EEPROM_TURNS_EL, turnsEl);
-    }
-
     if (offsetStepsAz == -1 || (unsigned long)offsetStepsAz == 4294967295UL) {
         offsetStepsAz = 0;
         EEPROM.put(EEPROM_OFFSET_AZ, offsetStepsAz);
     }
 
+    // ─────────────────────────────────────────────────────────────
+    // CHARGEMENT ÉLÉVATION
+    // ─────────────────────────────────────────────────────────────
+    #if (ENCODER_EL_TYPE == ENCODER_POT_MT)
+        // POT_MT: Charger accumulatedAdcEl (méthode cumulative)
+        EEPROM.get(EEPROM_TURNS_EL, accumulatedAdcEl);
+        if (accumulatedAdcEl == -1 || (unsigned long)accumulatedAdcEl == 4294967295UL) {
+            accumulatedAdcEl = 0;
+            EEPROM.put(EEPROM_TURNS_EL, accumulatedAdcEl);
+        }
+    #else
+        // SSI/autres: Charger turnsEl
+        EEPROM.get(EEPROM_TURNS_EL, turnsEl);
+        if (turnsEl == -1 || (unsigned long)turnsEl == 4294967295UL) {
+            turnsEl = 0;
+            EEPROM.put(EEPROM_TURNS_EL, turnsEl);
+        }
+    #endif
+
+    EEPROM.get(EEPROM_OFFSET_EL, offsetStepsEl);
     if (offsetStepsEl == -1 || (unsigned long)offsetStepsEl == 4294967295UL) {
         offsetStepsEl = 0;
         EEPROM.put(EEPROM_OFFSET_EL, offsetStepsEl);
@@ -816,8 +971,16 @@ void loadCalibrationFromEEPROM() {
 
     #if DEBUG_SERIAL
         Serial.println(F("Calibration chargée depuis EEPROM:"));
-        Serial.print(F("  turnsAz: ")); Serial.println(turnsAz);
-        Serial.print(F("  turnsEl: ")); Serial.println(turnsEl);
+        #if (ENCODER_AZ_TYPE == ENCODER_POT_MT)
+            Serial.print(F("  accumulatedAdcAz: ")); Serial.println(accumulatedAdcAz);
+        #else
+            Serial.print(F("  turnsAz: ")); Serial.println(turnsAz);
+        #endif
+        #if (ENCODER_EL_TYPE == ENCODER_POT_MT)
+            Serial.print(F("  accumulatedAdcEl: ")); Serial.println(accumulatedAdcEl);
+        #else
+            Serial.print(F("  turnsEl: ")); Serial.println(turnsEl);
+        #endif
         Serial.print(F("  offsetAz: ")); Serial.println(offsetStepsAz);
         Serial.print(F("  offsetEl: ")); Serial.println(offsetStepsEl);
     #endif
@@ -855,4 +1018,371 @@ void printEncoderDebug() {
     Serial.print(F("° (raw:"));
     Serial.print(rawCountsEl);
     Serial.println(F(")"));
+}
+
+// ════════════════════════════════════════════════════════════════
+// TABLE DE CORRECTION AZIMUTH
+// ════════════════════════════════════════════════════════════════
+
+void loadAzCorrectionTable() {
+    // Chargement table correction depuis EEPROM
+    // Si premier élément = 0xFFFFFFFF (EEPROM vierge), initialiser avec valeurs linéaires
+
+    long firstValue;
+    EEPROM.get(EEPROM_AZ_TABLE, firstValue);
+
+    if (firstValue == -1 || (unsigned long)firstValue == 4294967295UL) {
+        // Table vierge → initialiser avec valeurs linéaires basées sur GEAR_RATIO_AZ
+        #if DEBUG_SERIAL
+            Serial.println(F("Table correction Az vierge → initialisation linéaire"));
+        #endif
+        resetAzCorrectionTable();
+    } else {
+        // Charger table depuis EEPROM
+        for (int i = 0; i < AZ_TABLE_POINTS; i++) {
+            EEPROM.get(EEPROM_AZ_TABLE + (i * sizeof(long)), azCorrectionTable[i]);
+        }
+
+        #if DEBUG_SERIAL
+            Serial.println(F("Table correction Az chargée depuis EEPROM"));
+            Serial.print(F("  Point 0° = ")); Serial.println(azCorrectionTable[0]);
+            Serial.print(F("  Point 170° = ")); Serial.println(azCorrectionTable[17]);
+            Serial.print(F("  Point 340° = ")); Serial.println(azCorrectionTable[34]);
+        #endif
+    }
+
+    azTableLoaded = true;
+}
+
+void resetAzCorrectionTable() {
+    // Initialiser table avec valeurs linéaires
+    // GEAR_RATIO_AZ = 4.4 (codé en dur pour éviter problèmes de cache VSCode)
+    // Formule: accumulatedAdc = angle * 4.4 * 1024 / 360
+
+    const float RATIO_AZ = 4.4;  // Codé en dur ici!
+
+    for (int i = 0; i < AZ_TABLE_POINTS; i++) {
+        float angle = (float)(i * AZ_TABLE_STEP);  // 0, 10, 20, ... 340
+        // ADC cumulé pour atteindre cet angle (formule linéaire)
+        azCorrectionTable[i] = (long)(angle * RATIO_AZ * 1024.0 / 360.0);
+    }
+
+    // Sauvegarder dans EEPROM
+    for (int i = 0; i < AZ_TABLE_POINTS; i++) {
+        EEPROM.put(EEPROM_AZ_TABLE + (i * sizeof(long)), azCorrectionTable[i]);
+    }
+
+    #if DEBUG_SERIAL
+        Serial.println(F("═══════════════════════════════════════"));
+        Serial.println(F("Table correction Az réinitialisée (linéaire)"));
+        Serial.print(F("  RATIO_AZ = ")); Serial.println(RATIO_AZ);
+        Serial.print(F("  Point 0° = ADC ")); Serial.println(azCorrectionTable[0]);
+        Serial.print(F("  Point 170° = ADC ")); Serial.println(azCorrectionTable[17]);
+        Serial.print(F("  Point 340° = ADC ")); Serial.println(azCorrectionTable[34]);
+        Serial.println(F("═══════════════════════════════════════"));
+    #endif
+}
+
+float adcToDegrees(long accumulatedAdc) {
+    // Conversion ADC cumulé → degrés avec interpolation linéaire
+    //
+    // 1. Trouver les deux points de la table qui encadrent l'ADC
+    // 2. Interpoler linéairement entre ces deux points
+    //
+    // Cas spéciaux:
+    // - ADC < point 0: extrapolation avant (négatif)
+    // - ADC > point 34: extrapolation après (>340°)
+
+    // Cas trivial: table non chargée → fallback linéaire
+    if (!azTableLoaded) {
+        float potDegreesTotal = (float)accumulatedAdc * 360.0 / 1024.0;
+        return potDegreesTotal / GEAR_RATIO_AZ;
+    }
+
+    // Trouver l'intervalle contenant cet ADC
+    int lowerIndex = -1;
+    int upperIndex = -1;
+
+    for (int i = 0; i < AZ_TABLE_POINTS - 1; i++) {
+        if (accumulatedAdc >= azCorrectionTable[i] && accumulatedAdc <= azCorrectionTable[i + 1]) {
+            lowerIndex = i;
+            upperIndex = i + 1;
+            break;
+        }
+    }
+
+    // Cas: ADC avant le premier point (ex: valeurs négatives)
+    if (lowerIndex == -1 && accumulatedAdc < azCorrectionTable[0]) {
+        // Extrapolation linéaire basée sur les deux premiers points
+        lowerIndex = 0;
+        upperIndex = 1;
+    }
+
+    // Cas: ADC après le dernier point
+    if (lowerIndex == -1 && accumulatedAdc > azCorrectionTable[AZ_TABLE_POINTS - 1]) {
+        // Extrapolation linéaire basée sur les deux derniers points
+        lowerIndex = AZ_TABLE_POINTS - 2;
+        upperIndex = AZ_TABLE_POINTS - 1;
+    }
+
+    // Sécurité: si toujours pas trouvé, utiliser premier intervalle
+    if (lowerIndex == -1) {
+        lowerIndex = 0;
+        upperIndex = 1;
+    }
+
+    // Interpolation linéaire
+    long adcLow = azCorrectionTable[lowerIndex];
+    long adcHigh = azCorrectionTable[upperIndex];
+    float angleLow = (float)(lowerIndex * AZ_TABLE_STEP);   // ex: 170°
+    float angleHigh = (float)(upperIndex * AZ_TABLE_STEP);  // ex: 180°
+
+    // Éviter division par zéro
+    if (adcHigh == adcLow) {
+        return angleLow;
+    }
+
+    // Interpolation: angle = angleLow + (adc - adcLow) * (angleHigh - angleLow) / (adcHigh - adcLow)
+    float ratio = (float)(accumulatedAdc - adcLow) / (float)(adcHigh - adcLow);
+    float interpolatedAngle = angleLow + ratio * (angleHigh - angleLow);
+
+    return interpolatedAngle;
+}
+
+void calibrateAzTablePoint(float realDegrees) {
+    // Calibration d'un point de la table
+    // Arrondit au point le plus proche (multiple de 10°)
+    //
+    // Exemple: realDegrees = 173.5 → calibre point 170° (index 17)
+    // Enregistre la valeur ADC cumulée actuelle pour ce point
+
+    // Arrondir au multiple de 10 le plus proche
+    int pointIndex = (int)((realDegrees + 5.0) / AZ_TABLE_STEP);
+
+    // Limiter à la plage valide
+    if (pointIndex < 0) pointIndex = 0;
+    if (pointIndex >= AZ_TABLE_POINTS) pointIndex = AZ_TABLE_POINTS - 1;
+
+    int calibratedAngle = pointIndex * AZ_TABLE_STEP;
+
+    // Enregistrer la valeur ADC cumulée actuelle pour ce point
+    azCorrectionTable[pointIndex] = accumulatedAdcAz;
+
+    // Sauvegarder dans EEPROM
+    EEPROM.put(EEPROM_AZ_TABLE + (pointIndex * sizeof(long)), azCorrectionTable[pointIndex]);
+
+    // Mettre à jour position courante immédiatement
+    currentAz = (float)calibratedAngle;
+    filteredAz = currentAz;
+
+    #if DEBUG_SERIAL
+        Serial.println(F("═══════════════════════════════════════"));
+        Serial.print(F("✓ CALIBRATION TABLE Az point "));
+        Serial.print(calibratedAngle);
+        Serial.println(F("°"));
+        Serial.print(F("  Demandé: ")); Serial.print(realDegrees, 1); Serial.println(F("°"));
+        Serial.print(F("  Index: ")); Serial.println(pointIndex);
+        Serial.print(F("  ADC cumulé: ")); Serial.println(accumulatedAdcAz);
+        Serial.println(F("═══════════════════════════════════════"));
+    #endif
+}
+
+void printAzCorrectionTable() {
+    // Affichage complet de la table de correction via sendToClient
+    sendToClient("\r\n");
+    sendToClient("=== TABLE CORRECTION AZIMUTH (35 points) ===\r\n");
+    sendToClient("Angle  ADC_cumule  Delta\r\n");
+
+    for (int i = 0; i < AZ_TABLE_POINTS; i++) {
+        int angle = i * AZ_TABLE_STEP;
+        long adc = azCorrectionTable[i];
+
+        String line = "";
+        if (angle < 100) line += " ";
+        if (angle < 10) line += " ";
+        line += String(angle) + "   ";
+
+        if (adc >= 0) line += " ";
+        line += String(adc);
+
+        // Delta depuis point précédent
+        if (i > 0) {
+            long delta = azCorrectionTable[i] - azCorrectionTable[i - 1];
+            line += "  ";
+            if (delta >= 0) line += "+";
+            line += String(delta);
+        }
+
+        line += "\r\n";
+        sendToClient(line);
+    }
+
+    String status = "Pos: " + String(currentAz, 1) + "  ADC: " + String(accumulatedAdcAz) + "\r\n";
+    sendToClient(status);
+}
+
+// ════════════════════════════════════════════════════════════════
+// TABLE DE CORRECTION ÉLÉVATION
+// ════════════════════════════════════════════════════════════════
+
+void loadElCorrectionTable() {
+    // Chargement table correction élévation depuis EEPROM
+
+    long firstValue;
+    EEPROM.get(EEPROM_EL_TABLE, firstValue);
+
+    if (firstValue == -1 || (unsigned long)firstValue == 4294967295UL) {
+        #if DEBUG_SERIAL
+            Serial.println(F("Table correction El vierge → initialisation linéaire"));
+        #endif
+        resetElCorrectionTable();
+    } else {
+        for (int i = 0; i < EL_TABLE_POINTS; i++) {
+            EEPROM.get(EEPROM_EL_TABLE + (i * sizeof(long)), elCorrectionTable[i]);
+        }
+
+        #if DEBUG_SERIAL
+            Serial.println(F("Table correction El chargée depuis EEPROM"));
+            Serial.print(F("  Point 0° = ")); Serial.println(elCorrectionTable[0]);
+            Serial.print(F("  Point 50° = ")); Serial.println(elCorrectionTable[5]);
+            Serial.print(F("  Point 90° = ")); Serial.println(elCorrectionTable[9]);
+        #endif
+    }
+
+    elTableLoaded = true;
+}
+
+void resetElCorrectionTable() {
+    // Initialiser table avec valeurs linéaires basées sur GEAR_RATIO_EL
+
+    for (int i = 0; i < EL_TABLE_POINTS; i++) {
+        float angle = (float)(i * EL_TABLE_STEP);  // 0, 10, 20, ... 90
+        elCorrectionTable[i] = (long)(angle * GEAR_RATIO_EL * 1024.0 / 360.0);
+    }
+
+    // Sauvegarder dans EEPROM
+    for (int i = 0; i < EL_TABLE_POINTS; i++) {
+        EEPROM.put(EEPROM_EL_TABLE + (i * sizeof(long)), elCorrectionTable[i]);
+    }
+
+    #if DEBUG_SERIAL
+        Serial.println(F("═══════════════════════════════════════"));
+        Serial.println(F("Table correction El réinitialisée (linéaire)"));
+        Serial.print(F("  GEAR_RATIO_EL = ")); Serial.println(GEAR_RATIO_EL);
+        Serial.print(F("  Point 0° = ADC ")); Serial.println(elCorrectionTable[0]);
+        Serial.print(F("  Point 50° = ADC ")); Serial.println(elCorrectionTable[5]);
+        Serial.print(F("  Point 90° = ADC ")); Serial.println(elCorrectionTable[9]);
+        Serial.println(F("═══════════════════════════════════════"));
+    #endif
+}
+
+float adcToDegreesEl(long accumulatedAdc) {
+    // Conversion ADC cumulé → degrés élévation avec interpolation linéaire
+
+    if (!elTableLoaded) {
+        float potDegreesTotal = (float)accumulatedAdc * 360.0 / 1024.0;
+        return potDegreesTotal / GEAR_RATIO_EL;
+    }
+
+    // Trouver l'intervalle contenant cet ADC
+    int lowerIndex = -1;
+    int upperIndex = -1;
+
+    for (int i = 0; i < EL_TABLE_POINTS - 1; i++) {
+        if (accumulatedAdc >= elCorrectionTable[i] && accumulatedAdc <= elCorrectionTable[i + 1]) {
+            lowerIndex = i;
+            upperIndex = i + 1;
+            break;
+        }
+    }
+
+    // ADC avant premier point
+    if (lowerIndex == -1 && accumulatedAdc < elCorrectionTable[0]) {
+        lowerIndex = 0;
+        upperIndex = 1;
+    }
+
+    // ADC après dernier point
+    if (lowerIndex == -1 && accumulatedAdc > elCorrectionTable[EL_TABLE_POINTS - 1]) {
+        lowerIndex = EL_TABLE_POINTS - 2;
+        upperIndex = EL_TABLE_POINTS - 1;
+    }
+
+    if (lowerIndex == -1) {
+        lowerIndex = 0;
+        upperIndex = 1;
+    }
+
+    // Interpolation linéaire
+    long adcLow = elCorrectionTable[lowerIndex];
+    long adcHigh = elCorrectionTable[upperIndex];
+    float angleLow = (float)(lowerIndex * EL_TABLE_STEP);
+    float angleHigh = (float)(upperIndex * EL_TABLE_STEP);
+
+    if (adcHigh == adcLow) {
+        return angleLow;
+    }
+
+    float ratio = (float)(accumulatedAdc - adcLow) / (float)(adcHigh - adcLow);
+    return angleLow + ratio * (angleHigh - angleLow);
+}
+
+void calibrateElTablePoint(float realDegrees) {
+    // Calibration d'un point de la table élévation
+
+    int pointIndex = (int)((realDegrees + 5.0) / EL_TABLE_STEP);
+    if (pointIndex < 0) pointIndex = 0;
+    if (pointIndex >= EL_TABLE_POINTS) pointIndex = EL_TABLE_POINTS - 1;
+
+    int calibratedAngle = pointIndex * EL_TABLE_STEP;
+
+    elCorrectionTable[pointIndex] = accumulatedAdcEl;
+    EEPROM.put(EEPROM_EL_TABLE + (pointIndex * sizeof(long)), elCorrectionTable[pointIndex]);
+
+    currentEl = (float)calibratedAngle;
+    filteredEl = currentEl;
+
+    #if DEBUG_SERIAL
+        Serial.println(F("═══════════════════════════════════════"));
+        Serial.print(F("✓ CALIBRATION TABLE El point "));
+        Serial.print(calibratedAngle);
+        Serial.println(F("°"));
+        Serial.print(F("  Demandé: ")); Serial.print(realDegrees, 1); Serial.println(F("°"));
+        Serial.print(F("  Index: ")); Serial.println(pointIndex);
+        Serial.print(F("  ADC cumulé: ")); Serial.println(accumulatedAdcEl);
+        Serial.println(F("═══════════════════════════════════════"));
+    #endif
+}
+
+void printElCorrectionTable() {
+    // Affichage complet de la table de correction via sendToClient
+    sendToClient("\r\n");
+    sendToClient("=== TABLE CORRECTION ELEVATION (10 points) ===\r\n");
+    sendToClient("Angle  ADC_cumule  Delta\r\n");
+
+    for (int i = 0; i < EL_TABLE_POINTS; i++) {
+        int angle = i * EL_TABLE_STEP;
+        long adc = elCorrectionTable[i];
+
+        String line = "";
+        if (angle < 10) line += " ";
+        line += String(angle) + "   ";
+
+        if (adc >= 0) line += " ";
+        line += String(adc);
+
+        // Delta depuis point précédent
+        if (i > 0) {
+            long delta = elCorrectionTable[i] - elCorrectionTable[i - 1];
+            line += "  ";
+            if (delta >= 0) line += "+";
+            line += String(delta);
+        }
+
+        line += "\r\n";
+        sendToClient(line);
+    }
+
+    String status = "Pos: " + String(currentEl, 1) + "  ADC: " + String(accumulatedAdcEl) + "\r\n";
+    sendToClient(status);
 }
