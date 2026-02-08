@@ -6,7 +6,13 @@
       "Bash(git init:*)",
       "Bash(git branch:*)",
       "Bash(git add:*)",
-      "Bash(git commit -m \"$\\(cat <<''EOF''\nInitial commit - EME Rotator Controller\n\nContrôleur de rotateur EME complet pour parabole CAS90:\n- ✅ Encodeurs SSI HH-12 \\(absolu + incrémental multi-tours\\)\n- ✅ Moteurs stepper NEMA23 + TB6600 \\(asservissement position\\)\n- ✅ Protocole Easycom \\(Serial USB + Ethernet W5500\\)\n- ✅ Fins de course sécurité NC\n- ✅ Calibration EEPROM \\(tours + offsets\\)\n- ✅ Boutons manuels \\(CW/CCW/UP/DOWN/STOP\\)\n- ✅ Documentation complète \\(7 fichiers docs/\\)\n\nArchitecture modulaire avec switches TEST_xxx pour activation progressive.\nCompatible PstRotator pour tracking lunaire automatique.\n\nHardware:\n- Arduino Mega Pro 2560\n- Encodeurs SSI 12-bit \\(4096 counts/tour\\)\n- Drivers TB6600 microstepping 1/8\n- Module Ethernet W5500\n\nPrécision: ±0.08° | RAM: 4.3% | Flash: 5.1%\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n\\)\")"
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nInitial commit - EME Rotator Controller\n\nContrôleur de rotateur EME complet pour parabole CAS90:\n- ✅ Encodeurs SSI HH-12 \\(absolu + incrémental multi-tours\\)\n- ✅ Moteurs stepper NEMA23 + TB6600 \\(asservissement position\\)\n- ✅ Protocole Easycom \\(Serial USB + Ethernet W5500\\)\n- ✅ Fins de course sécurité NC\n- ✅ Calibration EEPROM \\(tours + offsets\\)\n- ✅ Boutons manuels \\(CW/CCW/UP/DOWN/STOP\\)\n- ✅ Documentation complète \\(7 fichiers docs/\\)\n\nArchitecture modulaire avec switches TEST_xxx pour activation progressive.\nCompatible PstRotator pour tracking lunaire automatique.\n\nHardware:\n- Arduino Mega Pro 2560\n- Encodeurs SSI 12-bit \\(4096 counts/tour\\)\n- Drivers TB6600 microstepping 1/8\n- Module Ethernet W5500\n\nPrécision: ±0.08° | RAM: 4.3% | Flash: 5.1%\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git push:*)",
+      "Bash(git checkout:*)",
+      "Bash(pio device monitor:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:pstrotator.com)",
+      "Bash(C:Userson7kg.platformiopenvScriptsplatformio.exe run --target clean)"
     ]
   }
 }

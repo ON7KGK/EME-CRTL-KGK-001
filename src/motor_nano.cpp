@@ -214,6 +214,9 @@ void updateMotorNano() {
         // Envoie IMMÉDIATEMENT sur changement de direction/vitesse
         // Envoie un keepalive toutes les 500ms quand moteurs actifs
         // (évite d'inonder le Nano à 50 cmd/sec)
+        // Inversion direction El (câblage moteur inversé côté Nano)
+        int8_t nanoDirEl = -newDirEl;
+
         bool motorsActive = (newDirAz != 0 || newDirEl != 0);
         bool stateChanged = (newDirAz != currentDirAz || newDirEl != currentDirEl || newSpeedMode != currentSpeedMode);
         bool keepalive = motorsActive && (now - lastNanoKeepalive >= NANO_KEEPALIVE_INTERVAL);
@@ -224,7 +227,7 @@ void updateMotorNano() {
             NANO_SERIAL.print(F("M:"));
             NANO_SERIAL.print(newDirAz);
             NANO_SERIAL.print(F(":"));
-            NANO_SERIAL.print(newDirEl);
+            NANO_SERIAL.print(nanoDirEl);
             NANO_SERIAL.print(F(":"));
             NANO_SERIAL.println(newSpeedMode);
 
@@ -425,11 +428,12 @@ void sendManualMove(int8_t dirAz, int8_t dirEl) {
     }
 
     // Envoyer commande avec speed=1 (vitesse RAPIDE pour tests)
-    // Note: speed=2 était lent (100 steps/s), speed=1 = vitesse auto rapide
+    // Inversion direction El (câblage moteur inversé côté Nano)
+    int8_t nanoDirEl = -dirEl;
     NANO_SERIAL.print(F("M:"));
     NANO_SERIAL.print(dirAz);
     NANO_SERIAL.print(F(":"));
-    NANO_SERIAL.print(dirEl);
+    NANO_SERIAL.print(nanoDirEl);
     NANO_SERIAL.println(F(":1"));
 
     // Mettre à jour état local

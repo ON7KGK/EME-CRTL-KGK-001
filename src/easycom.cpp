@@ -202,8 +202,8 @@ void parseEasycomCommand(String command) {
             return;
         }
 
-        // E10, E20, etc.: Calibrer un point de table élévation
-        if (command.startsWith("E") && command.length() > 1 && isDigit(command.charAt(1))) {
+        // E10, E20, E-10, E-20 etc.: Calibrer un point de table élévation
+        if (command.startsWith("E") && command.length() > 1 && (isDigit(command.charAt(1)) || command.charAt(1) == '-')) {
             float cal = command.substring(1).toFloat();
             calibrateElTablePoint(cal);
             sendPositionResponse();

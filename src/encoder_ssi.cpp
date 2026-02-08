@@ -489,9 +489,9 @@ void updateEncoders() {
         }
         currentEl = filteredEl;
 
-        // Contrainte -15° à +95°
-        if (currentEl < -15.0) currentEl = -15.0;
-        if (currentEl > 95.0) currentEl = 95.0;
+        // Contrainte selon plage de la table (-40° à +80°)
+        if (currentEl < (float)EL_TABLE_START) currentEl = (float)EL_TABLE_START;
+        if (currentEl > (float)(EL_TABLE_START + (EL_TABLE_POINTS - 1) * EL_TABLE_STEP)) currentEl = (float)(EL_TABLE_START + (EL_TABLE_POINTS - 1) * EL_TABLE_STEP);
 
         rawCountsEl = rawAdcEl;  // Pour debug
 
@@ -860,7 +860,7 @@ void calibrateEl(float realDegrees) {
         // Formule: ADC = (angle - realDegrees) * GEAR_RATIO * 1024 / 360
 
         for (int i = 0; i < EL_TABLE_POINTS; i++) {
-            float angle = (float)(i * EL_TABLE_STEP);  // 0, 10, 20, ... 90
+            float angle = (float)(EL_TABLE_START + i * EL_TABLE_STEP);  // -40, -30, ... +80
             // ADC relatif à la position de calibration
             elCorrectionTable[i] = (long)((angle - realDegrees) * GEAR_RATIO_EL * 1024.0 / 360.0);
         }
@@ -880,11 +880,12 @@ void calibrateEl(float realDegrees) {
             Serial.println(F("°"));
             Serial.print(F("  ADC actuel: ")); Serial.println(currentAdc);
             Serial.println(F("  Table recalculée avec cette ref:"));
-            Serial.print(F("    0° = ADC ")); Serial.println(elCorrectionTable[0]);
-            int refIndex = (int)(realDegrees / EL_TABLE_STEP);
-            Serial.print(F("    ")); Serial.print((int)realDegrees); Serial.print(F("° = ADC "));
-            Serial.println(elCorrectionTable[refIndex]);
-            Serial.print(F("    90° = ADC ")); Serial.println(elCorrectionTable[9]);
+            Serial.print(F("    ")); Serial.print(EL_TABLE_START);
+            Serial.print(F("° = ADC ")); Serial.println(elCorrectionTable[0]);
+            int zeroIndex = (-EL_TABLE_START) / EL_TABLE_STEP;
+            Serial.print(F("    0° = ADC ")); Serial.println(elCorrectionTable[zeroIndex]);
+            Serial.print(F("    ")); Serial.print(EL_TABLE_START + (EL_TABLE_POINTS - 1) * EL_TABLE_STEP);
+            Serial.print(F("° = ADC ")); Serial.println(elCorrectionTable[EL_TABLE_POINTS - 1]);
             Serial.println(F("═══════════════════════════════════════"));
         #endif
 
@@ -1243,9 +1244,12 @@ void loadElCorrectionTable() {
 
         #if DEBUG_SERIAL
             Serial.println(F("Table correction El chargée depuis EEPROM"));
-            Serial.print(F("  Point 0° = ")); Serial.println(elCorrectionTable[0]);
-            Serial.print(F("  Point 50° = ")); Serial.println(elCorrectionTable[5]);
-            Serial.print(F("  Point 90° = ")); Serial.println(elCorrectionTable[9]);
+            Serial.print(F("  Point ")); Serial.print(EL_TABLE_START);
+            Serial.print(F("° = ")); Serial.println(elCorrectionTable[0]);
+            int zeroIdx = (-EL_TABLE_START) / EL_TABLE_STEP;
+            Serial.print(F("  Point 0° = ")); Serial.println(elCorrectionTable[zeroIdx]);
+            Serial.print(F("  Point ")); Serial.print(EL_TABLE_START + (EL_TABLE_POINTS - 1) * EL_TABLE_STEP);
+            Serial.print(F("° = ")); Serial.println(elCorrectionTable[EL_TABLE_POINTS - 1]);
         #endif
     }
 
@@ -1256,7 +1260,7 @@ void resetElCorrectionTable() {
     // Initialiser table avec valeurs linéaires basées sur GEAR_RATIO_EL
 
     for (int i = 0; i < EL_TABLE_POINTS; i++) {
-        float angle = (float)(i * EL_TABLE_STEP);  // 0, 10, 20, ... 90
+        float angle = (float)(EL_TABLE_START + i * EL_TABLE_STEP);  // -40, -30, ... +80
         elCorrectionTable[i] = (long)(angle * GEAR_RATIO_EL * 1024.0 / 360.0);
     }
 
@@ -1269,9 +1273,12 @@ void resetElCorrectionTable() {
         Serial.println(F("═══════════════════════════════════════"));
         Serial.println(F("Table correction El réinitialisée (linéaire)"));
         Serial.print(F("  GEAR_RATIO_EL = ")); Serial.println(GEAR_RATIO_EL);
-        Serial.print(F("  Point 0° = ADC ")); Serial.println(elCorrectionTable[0]);
-        Serial.print(F("  Point 50° = ADC ")); Serial.println(elCorrectionTable[5]);
-        Serial.print(F("  Point 90° = ADC ")); Serial.println(elCorrectionTable[9]);
+        Serial.print(F("  Plage: ")); Serial.print(EL_TABLE_START);
+        Serial.print(F("° à ")); Serial.print(EL_TABLE_START + (EL_TABLE_POINTS - 1) * EL_TABLE_STEP);
+        Serial.println(F("°"));
+        Serial.print(F("  Point ")); Serial.print(EL_TABLE_START);
+        Serial.print(F("° = ADC ")); Serial.println(elCorrectionTable[0]);
+        Serial.print(F("  Point 0° = ADC ")); Serial.println(elCorrectionTable[-EL_TABLE_START / EL_TABLE_STEP]);
         Serial.println(F("═══════════════════════════════════════"));
     #endif
 }
@@ -1316,8 +1323,8 @@ float adcToDegreesEl(long accumulatedAdc) {
     // Interpolation linéaire
     long adcLow = elCorrectionTable[lowerIndex];
     long adcHigh = elCorrectionTable[upperIndex];
-    float angleLow = (float)(lowerIndex * EL_TABLE_STEP);
-    float angleHigh = (float)(upperIndex * EL_TABLE_STEP);
+    float angleLow = (float)(EL_TABLE_START + lowerIndex * EL_TABLE_STEP);
+    float angleHigh = (float)(EL_TABLE_START + upperIndex * EL_TABLE_STEP);
 
     if (adcHigh == adcLow) {
         return angleLow;
@@ -1330,11 +1337,11 @@ float adcToDegreesEl(long accumulatedAdc) {
 void calibrateElTablePoint(float realDegrees) {
     // Calibration d'un point de la table élévation
 
-    int pointIndex = (int)((realDegrees + 5.0) / EL_TABLE_STEP);
+    int pointIndex = (int)((realDegrees - EL_TABLE_START + 5.0) / EL_TABLE_STEP);
     if (pointIndex < 0) pointIndex = 0;
     if (pointIndex >= EL_TABLE_POINTS) pointIndex = EL_TABLE_POINTS - 1;
 
-    int calibratedAngle = pointIndex * EL_TABLE_STEP;
+    int calibratedAngle = EL_TABLE_START + pointIndex * EL_TABLE_STEP;
 
     elCorrectionTable[pointIndex] = accumulatedAdcEl;
     EEPROM.put(EEPROM_EL_TABLE + (pointIndex * sizeof(long)), elCorrectionTable[pointIndex]);
@@ -1357,15 +1364,16 @@ void calibrateElTablePoint(float realDegrees) {
 void printElCorrectionTable() {
     // Affichage complet de la table de correction via sendToClient
     sendToClient("\r\n");
-    sendToClient("=== TABLE CORRECTION ELEVATION (10 points) ===\r\n");
+    sendToClient("=== TABLE CORRECTION ELEVATION (13 points) ===\r\n");
     sendToClient("Angle  ADC_cumule  Delta\r\n");
 
     for (int i = 0; i < EL_TABLE_POINTS; i++) {
-        int angle = i * EL_TABLE_STEP;
+        int angle = EL_TABLE_START + i * EL_TABLE_STEP;
         long adc = elCorrectionTable[i];
 
         String line = "";
-        if (angle < 10) line += " ";
+        if (angle >= 0 && angle < 10) line += "  ";
+        else if (angle >= 10 || (angle < 0 && angle > -10)) line += " ";
         line += String(angle) + "   ";
 
         if (adc >= 0) line += " ";

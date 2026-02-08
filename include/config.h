@@ -309,20 +309,34 @@
 // ════════════════════════════════════════════════════════════════
 // TABLE DE CORRECTION ÉLÉVATION (Compensation non-linéarité pot)
 // ════════════════════════════════════════════════════════════════
-// 10 points de calibration (0° à 90° par pas de 10°)
+// 13 points de calibration (-40° à +80° par pas de 10°)
 // Même principe que la table azimuth
 //
-// Commandes: E10, E20, etc. pour calibrer (E = Elevation)
+// Commandes: E10, E20, E-10, E-20 etc. pour calibrer (E = Elevation)
 //           ETABLE pour afficher, ERESET pour réinitialiser
 
-#define EL_TABLE_POINTS      10    // Nombre de points (0,10,20...90)
+#define EL_TABLE_POINTS      13    // Nombre de points (-40,-30,...,70,80)
+#define EL_TABLE_START       -40   // Angle de début de la table
 #define EL_TABLE_STEP        10    // Intervalle en degrés entre points
-#define EEPROM_EL_TABLE      250   // Adresse début table (10 × 4 bytes = 40 bytes)
-                                   // Occupe adresses 250-289
+#define EEPROM_EL_TABLE      250   // Adresse début table (13 × 4 bytes = 52 bytes)
+                                   // Occupe adresses 250-301
 
-// Adresses réservées pour futures extensions
-#define EEPROM_RESERVED_1    300
-#define EEPROM_RESERVED_2    308
+// ════════════════════════════════════════════════════════════════
+// OFFSET AFFICHAGE ÉLÉVATION (Parabole offset)
+// ════════════════════════════════════════════════════════════════
+// Offset display-only pour compenser le décalage mécanique d'une
+// parabole offset. N'affecte PAS le contrôle moteur ni Easycom.
+// Ajustable via boutons +/- sur le Nextion (pas de 0.1°)
+
+#define EEPROM_EL_DISPLAY_OFFSET   310   // float (4 bytes) - valeur offset
+#define EEPROM_EL_OFFSET_ENABLED   314   // uint8_t (1 byte) - ON/OFF
+#define EL_DISPLAY_OFFSET_STEP     0.1   // Incrément par clic bouton (degrés)
+
+// IDs composants Nextion pour boutons offset
+// À modifier selon les IDs assignés dans l'éditeur Nextion
+#define NEXTION_ID_OFFSET_PLUS    19   // Bouton "+" offset
+#define NEXTION_ID_OFFSET_MINUS   20   // Bouton "-" offset
+#define NEXTION_ID_OFFSET_TOGGLE  21   // Bouton ON/OFF offset
 
 // ════════════════════════════════════════════════════════════════
 // INVERSION SENS ENCODEURS (SSI et Potentiomètres)
@@ -331,7 +345,7 @@
 // S'applique à tous les types d'encodeurs: SSI, POT_1T, POT_MT
 
 #define REVERSE_AZ    true  // Inverser sens azimuth (true/false)
-#define REVERSE_EL    true  // Inverser sens élévation (true/false)
+#define REVERSE_EL    false  // Inverser sens élévation (true/false)
 
 // ════════════════════════════════════════════════════════════════
 // MODULES ACTIFS (Switches pour tests progressifs)

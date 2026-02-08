@@ -125,10 +125,78 @@ void restoreAzCalibrationTable() {
 */
 
 // ════════════════════════════════════════════════════════════════
-// TABLE CORRECTION ÉLÉVATION (à compléter après calibration)
+// TABLE CORRECTION ÉLÉVATION (13 points)
 // ════════════════════════════════════════════════════════════════
 // GEAR_RATIO_EL = 5
-// Plage: 0° à 90° (10 points)
+// Calibrée manuellement avec précision
+// Plage: -40° à +80° (13 points, pas de 10°)
 //
-// TODO: Ajouter après calibration avec ETABLE
+// Format: Angle (°) | ADC_cumulé | Delta depuis point précédent
+// ════════════════════════════════════════════════════════════════
+
+Angle  ADC_cumule  Delta
+-40    -585
+-30    -440        +145
+-20    -296        +144
+-10    -155        +141
+  0    0           +155
+ 10    145         +145
+ 20    266         +121
+ 30    413         +147
+ 40    560         +147
+ 50    707         +147
+ 60    847         +140
+ 70    1003        +156
+ 80    1144        +141
+
+// Position au moment de la sauvegarde: 80.0° (ADC: 1146)
+
+// ════════════════════════════════════════════════════════════════
+// STATISTIQUES ÉLÉVATION
+// ════════════════════════════════════════════════════════════════
+// Delta moyen: ~145 ADC/10° (théorique: 142 avec ratio 5)
+// Plage totale: -585 à +1144 = 1729 ADC pour 120°
+// ADC/degré effectif: 1729/120 = 14.4 ADC/°
+// Ratio effectif calculé: (14.4 * 360) / 1024 = 5.06
+
+// ════════════════════════════════════════════════════════════════
+// POUR RESTAURER CETTE TABLE
+// ════════════════════════════════════════════════════════════════
+// 1. Pointer l'antenne à 0° (horizontal)
+// 2. Envoyer commande S0 pour reset ADC et recalculer table linéaire
+// 3. Puis calibrer chaque point avec E-40, E-30, ..., E70, E80
+//    en pointant précisément à chaque angle
+//
+// OU restaurer via code C++ (voir ci-dessous)
+
+// ════════════════════════════════════════════════════════════════
+// CODE C++ POUR RESTAURER (copier dans encoder_ssi.cpp si besoin)
+// ════════════════════════════════════════════════════════════════
+/*
+void restoreElCalibrationTable() {
+    // Table calibrée ON7KG 2026-02-08
+    const long savedTable[13] = {
+        -585,   // -40°
+        -440,   // -30°
+        -296,   // -20°
+        -155,   // -10°
+        0,      //   0°
+        145,    //  10°
+        266,    //  20°
+        413,    //  30°
+        560,    //  40°
+        707,    //  50°
+        847,    //  60°
+        1003,   //  70°
+        1144    //  80°
+    };
+
+    for (int i = 0; i < 13; i++) {
+        elCorrectionTable[i] = savedTable[i];
+        EEPROM.put(EEPROM_EL_TABLE + (i * sizeof(long)), savedTable[i]);
+    }
+
+    Serial.println(F("Table El restaurée depuis backup!"));
+}
+*/
 

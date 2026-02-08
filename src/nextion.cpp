@@ -10,6 +10,7 @@
 
 #if ENABLE_NEXTION
 
+#include <EEPROM.h>          // Pour sauvegarde offset
 #include "encoder_ssi.h"    // Pour currentAz, currentEl
 #include "motor_stepper.h"  // Pour targetAz, targetEl
 #include "easycom.h"        // Pour parseEasycom() (commandes automatiques)
@@ -68,6 +69,12 @@ bool prevSTOP = false;
 
 // État mouvement manuel en cours
 bool manualMoving = false;
+
+// ─────────────────────────────────────────────────────────────────
+// OFFSET AFFICHAGE ÉLÉVATION (Parabole offset)
+// ─────────────────────────────────────────────────────────────────
+float elDisplayOffset = 0.0;    // Offset en degrés (display-only)
+bool elOffsetEnabled = false;   // Affichage offset activé
 
 // ─────────────────────────────────────────────────────────────────
 // IDs COMPOSANTS NEXTION (doivent correspondre au fichier .HMI)
@@ -133,8 +140,41 @@ void setupNextion() {
     // sendToNextion("rest");  // Commande reset
     // delay(500);
 
+    // ─────────────────────────────────────────────────────────────
+    // CHARGEMENT OFFSET ÉLÉVATION DEPUIS EEPROM
+    // ─────────────────────────────────────────────────────────────
+    float savedOffset;
+    EEPROM.get(EEPROM_EL_DISPLAY_OFFSET, savedOffset);
+    if (!isnan(savedOffset) && savedOffset > -90.0 && savedOffset < 90.0) {
+        elDisplayOffset = savedOffset;
+    } else {
+        elDisplayOffset = 0.0;
+        EEPROM.put(EEPROM_EL_DISPLAY_OFFSET, elDisplayOffset);
+    }
+    uint8_t savedEnabled;
+    EEPROM.get(EEPROM_EL_OFFSET_ENABLED, savedEnabled);
+    elOffsetEnabled = (savedEnabled == 1);
+
+    #if DEBUG_SERIAL
+        Serial.print(F("Offset El: "));
+        Serial.print(elDisplayOffset, 1);
+        Serial.print(F("° ("));
+        Serial.print(elOffsetEnabled ? F("ON") : F("OFF"));
+        Serial.println(F(")"));
+    #endif
+
     // Affichage page accueil
     showNextionHomePage();
+
+    // Couleur et texte initial bouton offset
+    sendToNextion(elOffsetEnabled ? "bOffsetToggle.pco=2016" : "bOffsetToggle.pco=65535");
+    {
+        String cmd = "bOffsetToggle.txt=\"";
+        if (elDisplayOffset >= 0) cmd += "+";
+        cmd += String(elDisplayOffset, 1);
+        cmd += "\"";
+        sendToNextion(cmd);
+    }
 
     // Message initial
     sendToNextion("tStatus.txt=\"Initialisation...\"");
@@ -196,10 +236,11 @@ void updateNextion() {
     }
 
     // ─────────────────────────────────────────────────────────────
-    // ÉLÉVATION - Position actuelle
+    // ÉLÉVATION - Position actuelle (avec offset parabole si activé)
     // ─────────────────────────────────────────────────────────────
+    float displayEl = elOffsetEnabled ? (currentEl + elDisplayOffset) : currentEl;
     cmd = "tElCur.txt=\"";
-    cmd += String(currentEl, 1);
+    cmd += String(displayEl, 1);
     cmd += "°\"";
     sendToNextion(cmd);
 
@@ -210,15 +251,17 @@ void updateNextion() {
         // Nouvelle cible active - mémoriser et afficher
         lastDisplayedTargetEl = targetEl;
         lastTargetElTime = currentTime;
+        float displayTargetEl = elOffsetEnabled ? (targetEl + elDisplayOffset) : targetEl;
         cmd = "tElTgt.txt=\"";
-        cmd += String(targetEl, 1);
+        cmd += String(displayTargetEl, 1);
         cmd += "°\"";
         sendToNextion(cmd);
     } else if (lastDisplayedTargetEl > NO_TARGET &&
                (currentTime - lastTargetElTime) < TARGET_DISPLAY_PERSIST_MS) {
-        // Pas de cible active mais on garde l'affichage pendant 5s
+        // Pas de cible active mais on garde l'affichage
+        float displayLastEl = elOffsetEnabled ? (lastDisplayedTargetEl + elDisplayOffset) : lastDisplayedTargetEl;
         cmd = "tElTgt.txt=\"(";
-        cmd += String(lastDisplayedTargetEl, 1);
+        cmd += String(displayLastEl, 1);
         cmd += ")\"";  // Parenthèses pour indiquer "atteint"
         sendToNextion(cmd);
     } else {
@@ -228,6 +271,15 @@ void updateNextion() {
         }
         sendToNextion("tElTgt.txt=\"---\"");
     }
+
+    // ─────────────────────────────────────────────────────────────
+    // OFFSET ÉLÉVATION - Valeur affichée sur le bouton toggle
+    // ─────────────────────────────────────────────────────────────
+    cmd = "bOffsetToggle.txt=\"";
+    if (elDisplayOffset >= 0) cmd += "+";
+    cmd += String(elDisplayOffset, 1);
+    cmd += "\"";
+    sendToNextion(cmd);
 
     // ─────────────────────────────────────────────────────────────
     // INDICATEUR STATUT SYSTÈME (tStatus)
@@ -550,6 +602,35 @@ void readNextionTouch() {
                 Serial.println(F("[NEXTION] Touch tElCur RELEASE"));
             #endif
         }
+    }
+    // ─────────────────────────────────────────────────────────────
+    // BOUTONS OFFSET ÉLÉVATION (pas de mutex avec boutons moteur)
+    // ─────────────────────────────────────────────────────────────
+    else if (componentID == NEXTION_ID_OFFSET_PLUS && isPressed) {
+        elDisplayOffset += EL_DISPLAY_OFFSET_STEP;
+        EEPROM.put(EEPROM_EL_DISPLAY_OFFSET, elDisplayOffset);
+        #if DEBUG_NEXTION
+            Serial.print(F("[NEXTION] Offset El + → "));
+            Serial.println(elDisplayOffset, 1);
+        #endif
+    }
+    else if (componentID == NEXTION_ID_OFFSET_MINUS && isPressed) {
+        elDisplayOffset -= EL_DISPLAY_OFFSET_STEP;
+        EEPROM.put(EEPROM_EL_DISPLAY_OFFSET, elDisplayOffset);
+        #if DEBUG_NEXTION
+            Serial.print(F("[NEXTION] Offset El - → "));
+            Serial.println(elDisplayOffset, 1);
+        #endif
+    }
+    else if (componentID == NEXTION_ID_OFFSET_TOGGLE && isPressed) {
+        elOffsetEnabled = !elOffsetEnabled;
+        EEPROM.put(EEPROM_EL_OFFSET_ENABLED, (uint8_t)elOffsetEnabled);
+        // Couleur bouton: vert si ON, blanc si OFF
+        sendToNextion(elOffsetEnabled ? "bOffsetToggle.pco=2016" : "bOffsetToggle.pco=65535");
+        #if DEBUG_NEXTION
+            Serial.print(F("[NEXTION] Offset El toggle → "));
+            Serial.println(elOffsetEnabled ? F("ON") : F("OFF"));
+        #endif
     }
 }
 
