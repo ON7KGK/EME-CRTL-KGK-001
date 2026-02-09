@@ -354,7 +354,7 @@ void updateEncoders() {
             filteredAz = rawAzDeg;
             azFilterInitialized = true;
         } else {
-            filteredAz = 0.25 * rawAzDeg + 0.75 * filteredAz;
+            filteredAz = 0.10 * rawAzDeg + 0.90 * filteredAz;
         }
         currentAz = filteredAz;
 
@@ -485,7 +485,7 @@ void updateEncoders() {
             filteredEl = rawElDeg;
             elFilterInitialized = true;
         } else {
-            filteredEl = 0.25 * rawElDeg + 0.75 * filteredEl;
+            filteredEl = 0.10 * rawElDeg + 0.90 * filteredEl;
         }
         currentEl = filteredEl;
 

@@ -258,13 +258,13 @@
 // Configuration IP statique (192.168.1.177)
 #define IP_OCTET_1    192
 #define IP_OCTET_2    168
-#define IP_OCTET_3    1
-#define IP_OCTET_4    177   // Modifier selon votre réseau
+#define IP_OCTET_3    0
+#define IP_OCTET_4    200   // Modifier selon votre réseau
 
 // Gateway et subnet (standard réseau local)
 #define GW_OCTET_1    192
 #define GW_OCTET_2    168
-#define GW_OCTET_3    1
+#define GW_OCTET_3    0
 #define GW_OCTET_4    1     // Gateway (typiquement routeur)
 
 #define SUBNET_OCTET_1  255

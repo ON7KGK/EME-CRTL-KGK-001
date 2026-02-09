@@ -202,6 +202,15 @@ void updateMotorNano() {
         }
 
         // ─────────────────────────────────────────────────────────────
+        // BLOCAGE DIRECTIONNEL SUR FINS DE COURSE
+        // ─────────────────────────────────────────────────────────────
+        // Bloquer mouvement VERS la limite active, permettre direction opposée
+        if (nanoLimitCW && newDirAz > 0) { newDirAz = 0; movingAz = false; }
+        if (nanoLimitCCW && newDirAz < 0) { newDirAz = 0; movingAz = false; }
+        if (nanoLimitUp && newDirEl > 0) { newDirEl = 0; movingEl = false; }
+        if (nanoLimitDown && newDirEl < 0) { newDirEl = 0; movingEl = false; }
+
+        // ─────────────────────────────────────────────────────────────
         // CALCUL MODE VITESSE (selon distance max des deux axes)
         // ─────────────────────────────────────────────────────────────
         // 0 = LENT (proche de la cible), 1 = RAPIDE (loin de la cible)
@@ -308,7 +317,7 @@ void readNanoResponse() {
                     nanoLimitCW = true;
                     movingAz = false;
                     currentDirAz = 0;
-                    targetAz = NO_TARGET;
+                    // NE PAS effacer targetAz: permet mouvement opposé (CCW)
                     #if DEBUG_SERIAL
                         Serial.println(F("[NANO] !!! LIMIT CW !!!"));
                     #endif
@@ -318,7 +327,7 @@ void readNanoResponse() {
                     nanoLimitCCW = true;
                     movingAz = false;
                     currentDirAz = 0;
-                    targetAz = NO_TARGET;
+                    // NE PAS effacer targetAz: permet mouvement opposé (CW)
                     #if DEBUG_SERIAL
                         Serial.println(F("[NANO] !!! LIMIT CCW !!!"));
                     #endif
@@ -328,7 +337,7 @@ void readNanoResponse() {
                     nanoLimitUp = true;
                     movingEl = false;
                     currentDirEl = 0;
-                    targetEl = NO_TARGET;
+                    // NE PAS effacer targetEl: permet mouvement opposé (DOWN)
                     #if DEBUG_SERIAL
                         Serial.println(F("[NANO] !!! LIMIT UP !!!"));
                     #endif
@@ -338,7 +347,7 @@ void readNanoResponse() {
                     nanoLimitDown = true;
                     movingEl = false;
                     currentDirEl = 0;
-                    targetEl = NO_TARGET;
+                    // NE PAS effacer targetEl: permet mouvement opposé (UP)
                     #if DEBUG_SERIAL
                         Serial.println(F("[NANO] !!! LIMIT DOWN !!!"));
                     #endif
